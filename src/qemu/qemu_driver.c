@@ -11531,6 +11531,14 @@ qemuDomainMigratePrepare2(virConnectPtr dconn,
 
     virCheckFlags(QEMU_MIGRATION_FLAGS, -1);
 
+    if (flags & VIR_MIGRATE_ENABLE_POSTCOPY) {
+        /* post-copy migration does not work with Sequence v2 */
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Post-copy migration requested but not "
+                         "supported by v2 protocol"));
+        goto cleanup;
+    }
+
     if (flags & VIR_MIGRATE_TUNNELLED) {
         /* this is a logical error; we never should have gotten here with
          * VIR_MIGRATE_TUNNELLED set
