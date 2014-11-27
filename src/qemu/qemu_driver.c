@@ -12546,6 +12546,55 @@ qemuDomainGetJobStats(virDomainPtr dom,
 }
 
 
+static int qemuDomainMigrateStartPostCopy(virDomainPtr dom,
+                                          unsigned int flags)
+{
+    virQEMUDriverPtr driver = dom->conn->privateData;
+    virDomainObjPtr vm;
+    int ret = -1;
+    qemuDomainObjPrivatePtr priv;
+
+    virCheckFlags(0, -1);
+
+    if (!(vm = qemuDomObjFromDomain(dom)))
+        goto cleanup;
+
+    if (virDomainMigrateStartPostCopyEnsureACL(dom->conn, vm->def) < 0)
+        goto cleanup;
+
+    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_MIGRATION_OP) < 0)
+        goto cleanup;
+
+    if (!virDomainObjIsActive(vm)) {
+        virReportError(VIR_ERR_OPERATION_INVALID,
+                       "%s", _("domain is not running"));
+        goto endjob;
+    }
+
+    priv = vm->privateData;
+
+    if (priv->job.asyncJob != QEMU_ASYNC_JOB_MIGRATION_OUT) {
+        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                       _("post-copy can only be started "
+                         "while migration is in progress"));
+        goto endjob;
+    }
+
+    VIR_DEBUG("Starting post-copy");
+    qemuDomainObjEnterMonitor(driver, vm);
+    ret = qemuMonitorMigrateStartPostCopy(priv->mon);
+    qemuDomainObjExitMonitor(driver, vm);
+
+ endjob:
+    if (!qemuDomainObjEndJob(driver, vm))
+        vm = NULL;
+
+ cleanup:
+    if (vm)
+        virObjectUnlock(vm);
+    return ret;
+}
+
 static int qemuDomainAbortJob(virDomainPtr dom)
 {
     virQEMUDriverPtr driver = dom->conn->privateData;
@@ -19292,6 +19341,7 @@ static virHypervisorDriver qemuHypervisorDriver = {
     .connectGetAllDomainStats = qemuConnectGetAllDomainStats, /* 1.2.8 */
     .nodeAllocPages = qemuNodeAllocPages, /* 1.2.9 */
     .domainGetFSInfo = qemuDomainGetFSInfo, /* 1.2.11 */
+    .domainMigrateStartPostCopy = qemuDomainMigrateStartPostCopy, /* 1.2.11 */
 };
 
 
