@@ -1439,6 +1439,7 @@ to the I<uri> namespace is displayed instead of being modified.
 I<domain> I<desturi> [I<migrateuri>] [I<graphicsuri>] [I<listen-address>]
 [I<dname>] [I<--timeout> B<seconds>] [I<--xml> B<file>]
 [I<--enable-postcopy>]
+[I<--postcopy-after> B<seconds>]
 
 Migrate domain to another host.  Add I<--live> for live migration; <--p2p>
 for peer-2-peer migration; I<--direct> for direct migration; or I<--tunnelled>
@@ -1490,6 +1491,10 @@ I<--enable-postcopy> enables post-copy logic in migration, but does not
 actually start post-copy, i.e., migration is started in pre-copy mode.
 Once migration started, the user may switch to post-copy using the
 B<migrate-start-postcopy> command sent from another virsh instance.
+
+I<--postcopy-after> switches to post-copy migration when pre-copy migration
+exceeds that many seconds. Zero means start post-copy as soon as possible.
+It can only be used with I<--live>.
 
 Running migration can be canceled by interrupting virsh (usually using
 C<Ctrl-C>) or by B<domjobabort> command sent from another virsh instance.

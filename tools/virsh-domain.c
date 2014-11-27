@@ -9522,6 +9522,10 @@ static const vshCmdOptDef opts_migrate[] = {
      .type = VSH_OT_BOOL,
      .help = N_("enable (but do not start) post-copy migration; to start post-copy use migrate-start-postcopy")
     },
+    {.name = "postcopy-after",
+     .type = VSH_OT_INT,
+     .help = N_("switch to post-copy migration if live migration exceeds timeout (in seconds)")
+    },
     {.name = "xml",
      .type = VSH_OT_STRING,
      .help = N_("filename containing updated XML for the target")
@@ -9604,6 +9608,8 @@ doMigrate(void *opaque)
     }
 
     if (vshCommandOptBool(cmd, "enable-postcopy"))
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
+    if (vshCommandOptBool(cmd, "postcopy-after")) /* actually an int */
         flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (vshCommandOptBool(cmd, "live"))
         flags |= VIR_MIGRATE_LIVE;
@@ -9695,6 +9701,20 @@ vshMigrationTimeout(vshControl *ctl,
     virDomainSuspend(dom);
 }
 
+static void
+vshMigrationPostCopyAfter(vshControl *ctl,
+                    virDomainPtr dom,
+                    void *opaque ATTRIBUTE_UNUSED)
+{
+    vshDebug(ctl, VSH_ERR_DEBUG, "starting post-copy\n");
+    int rv = virDomainMigrateStartPostCopy(dom, 0);
+    if (rv < 0) {
+        vshError(ctl, "%s", _("start post-copy command failed"));
+    } else {
+        vshDebug(ctl, VSH_ERR_INFO, "switched to post-copy\n");
+    }
+}
+
 static bool
 cmdMigrate(vshControl *ctl, const vshCmd *cmd)
 {
@@ -9704,8 +9724,10 @@ cmdMigrate(vshControl *ctl, const vshCmd *cmd)
     bool verbose = false;
     bool functionReturn = false;
     int timeout = 0;
+    int postCopyAfter = 0;
     bool live_flag = false;
     vshCtrlData data = { .dconn = NULL };
+    int rv;
 
     if (!(dom = vshCommandOptDomain(ctl, cmd, NULL)))
         return false;
@@ -9720,6 +9742,35 @@ cmdMigrate(vshControl *ctl, const vshCmd *cmd)
     } else if (timeout > 0 && !live_flag) {
         vshError(ctl, "%s",
                  _("migrate: Unexpected timeout for offline migration"));
+        goto cleanup;
+    }
+
+    rv = vshCommandOptInt(cmd, "postcopy-after", &postCopyAfter);
+    if (rv < 0 || (rv > 0 && postCopyAfter < 0)) {
+        vshError(ctl, "%s", _("invalid postcopy-after parameter"));
+        goto cleanup;
+    }
+    if (rv > 0) {
+        /* Ensure that we can multiply by 1000 without overflowing. */
+        if (postCopyAfter > INT_MAX / 1000) {
+            vshError(ctl, "%s", _("post-copy after parameter is too large"));
+            goto cleanup;
+        }
+        postCopyAfter *= 1000;
+        /* 0 is a special value inside virsh, which means no timeout, so
+         * use 1ms instead for "start post-copy immediately"
+         */
+        if (postCopyAfter == 0)
+            postCopyAfter = 1;
+    }
+
+    if (postCopyAfter > 0 && !live_flag) {
+        vshError(ctl, "%s",
+                 _("migrate: Unexpected postcopy-after for offline migration"));
+        goto cleanup;
+    } else if (postCopyAfter > 0 && timeout > 0) {
+        vshError(ctl, "%s",
+                 _("migrate: --postcopy-after is incompatible with --timeout"));
         goto cleanup;
     }
 
@@ -9752,8 +9803,13 @@ cmdMigrate(vshControl *ctl, const vshCmd *cmd)
                         doMigrate,
                         &data) < 0)
         goto cleanup;
-    functionReturn = vshWatchJob(ctl, dom, verbose, p[0], timeout,
-                                 vshMigrationTimeout, NULL, _("Migration"));
+    if (postCopyAfter != 0) {
+        functionReturn = vshWatchJob(ctl, dom, verbose, p[0], postCopyAfter,
+                                     vshMigrationPostCopyAfter, NULL, _("Migration"));
+    } else {
+        functionReturn = vshWatchJob(ctl, dom, verbose, p[0], timeout,
+                                     vshMigrationTimeout, NULL, _("Migration"));
+    }
 
     virThreadJoin(&workerThread);
 
