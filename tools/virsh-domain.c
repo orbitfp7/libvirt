@@ -9526,6 +9526,10 @@ static const vshCmdOptDef opts_migrate[] = {
      .type = VSH_OT_INT,
      .help = N_("switch to post-copy migration if live migration exceeds timeout (in seconds)")
     },
+    {.name = "postcopy-after-precopy",
+     .type = VSH_OT_BOOL,
+     .help = N_("switch to post-copy migration after one pass of pre-copy")
+    },
     {.name = "xml",
      .type = VSH_OT_STRING,
      .help = N_("filename containing updated XML for the target")
@@ -9611,6 +9615,8 @@ doMigrate(void *opaque)
         flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (vshCommandOptBool(cmd, "postcopy-after")) /* actually an int */
         flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
+    if (vshCommandOptBool(cmd, "postcopy-after-precopy"))
+        flags |= VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY;
     if (vshCommandOptBool(cmd, "live"))
         flags |= VIR_MIGRATE_LIVE;
     if (vshCommandOptBool(cmd, "p2p"))
