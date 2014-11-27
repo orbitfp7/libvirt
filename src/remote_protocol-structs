@@ -2612,6 +2612,10 @@ struct remote_domain_get_fsinfo_ret {
         } info;
         u_int                      ret;
 };
+struct remote_domain_migrate_start_post_copy_args {
+        remote_nonnull_domain      dom;
+        u_int                      flags;
+};
 enum remote_procedure {
         REMOTE_PROC_CONNECT_OPEN = 1,
         REMOTE_PROC_CONNECT_CLOSE = 2,
@@ -2963,4 +2967,5 @@ enum remote_procedure {
         REMOTE_PROC_DOMAIN_EVENT_CALLBACK_AGENT_LIFECYCLE = 348,
         REMOTE_PROC_DOMAIN_GET_FSINFO = 349,
         REMOTE_PROC_DOMAIN_DEFINE_XML_FLAGS = 350,
+        REMOTE_PROC_DOMAIN_MIGRATE_START_POST_COPY = 351,
 };

@@ -8174,6 +8174,7 @@ static virHypervisorDriver hypervisor_driver = {
     .connectGetAllDomainStats = remoteConnectGetAllDomainStats, /* 1.2.8 */
     .nodeAllocPages = remoteNodeAllocPages, /* 1.2.9 */
     .domainGetFSInfo = remoteDomainGetFSInfo, /* 1.2.11 */
+    .domainMigrateStartPostCopy = remoteDomainMigrateStartPostCopy, /* 1.2.11 */
 };
 
 static virNetworkDriver network_driver = {

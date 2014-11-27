@@ -3500,6 +3500,9 @@ virDomainMigrateDirect(virDomainPtr domain,
  *                                 automatically when supported).
  *   VIR_MIGRATE_UNSAFE    Force migration even if it is considered unsafe.
  *   VIR_MIGRATE_OFFLINE Migrate offline
+ *   VIR_MIGRATE_ENABLE_POSTCOPY Enable (but do not start) post-copy
+ *   VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY Start post-copy after the first pass
+ *                                      of pre-copy
  *
  * VIR_MIGRATE_TUNNELLED requires that VIR_MIGRATE_PEER2PEER be set.
  * Applications using the VIR_MIGRATE_PEER2PEER flag will probably
@@ -3535,6 +3538,17 @@ virDomainMigrateDirect(virDomainPtr domain,
  * libvirt will choose a suitable default.  Some hypervisors do
  * not support this feature and will return an error if bandwidth
  * is not 0.
+ *
+ * If you want to do post-copy migration, you have two choices:
+ * either use the low-level mechanism provided by libvirt, or its
+ * default policy. To use the low-level mechanism, you must first enable
+ * post-copy migration using the VIR_MIGRATE_ENABLE_POSTCOPY flag. Once
+ * migration is active, from a separate thread, you may start post-copy
+ * by calling virDomainMigrateStartPostCopy.
+ *
+ * The default post-copy policy implemented in libvirt is to start
+ * post-copy after the first pass of pre-copy. To enable this behaviour
+ * start migration with the VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY flag.
  *
  * To see which features are supported by the current hypervisor,
  * see virConnectGetCapabilities, /capabilities/host/migration_features.
@@ -3716,6 +3730,8 @@ virDomainMigrate(virDomainPtr domain,
  *                                 automatically when supported).
  *   VIR_MIGRATE_UNSAFE    Force migration even if it is considered unsafe.
  *   VIR_MIGRATE_OFFLINE Migrate offline
+ *   VIR_MIGRATE_ENABLE_POSTCOPY Enable (but do not start) post-copy
+ *   VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY Start post-copy after the first pass of pre-copy
  *
  * VIR_MIGRATE_TUNNELLED requires that VIR_MIGRATE_PEER2PEER be set.
  * Applications using the VIR_MIGRATE_PEER2PEER flag will probably
@@ -3751,6 +3767,17 @@ virDomainMigrate(virDomainPtr domain,
  * libvirt will choose a suitable default.  Some hypervisors do
  * not support this feature and will return an error if bandwidth
  * is not 0.
+ *
+ * If you want to do post-copy migration, you have two choices:
+ * either use the low-level mechanism provided by libvirt, or its
+ * default policy. To use the low-level mechanism, you must first enable
+ * post-copy migration using the VIR_MIGRATE_ENABLE_POSTCOPY flag. Once
+ * migration is active, from a separate thread, you may start post-copy
+ * by calling virDomainMigrateStartPostCopy.
+ *
+ * The default post-copy policy implemented in libvirt is to start
+ * post-copy after the first pass of pre-copy. To enable this behaviour
+ * start migration with the VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY flag.
  *
  * To see which features are supported by the current hypervisor,
  * see virConnectGetCapabilities, /capabilities/host/migration_features.
@@ -4147,6 +4174,8 @@ virDomainMigrate3(virDomainPtr domain,
  *                                 automatically when supported).
  *   VIR_MIGRATE_UNSAFE    Force migration even if it is considered unsafe.
  *   VIR_MIGRATE_OFFLINE Migrate offline
+ *   VIR_MIGRATE_ENABLE_POSTCOPY Enable (but do not start) post-copy
+ *   VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY Start post-copy after the first pass of pre-copy
  *
  * The operation of this API hinges on the VIR_MIGRATE_PEER2PEER flag.
  * If the VIR_MIGRATE_PEER2PEER flag is NOT set, the duri parameter
@@ -4178,6 +4207,17 @@ virDomainMigrate3(virDomainPtr domain,
  * libvirt will choose a suitable default.  Some hypervisors do
  * not support this feature and will return an error if bandwidth
  * is not 0.
+ *
+ * If you want to do post-copy migration, you have two choices:
+ * either use the low-level mechanism provided by libvirt, or its
+ * default policy. To use the low-level mechanism, you must first enable
+ * post-copy migration using the VIR_MIGRATE_ENABLE_POSTCOPY flag. Once
+ * migration is active, from a separate thread, you may start post-copy
+ * by calling virDomainMigrateStartPostCopy.
+ *
+ * The default post-copy policy implemented in libvirt is to start
+ * post-copy after the first pass of pre-copy. To enable this behaviour
+ * start migration with the VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY flag.
  *
  * To see which features are supported by the current hypervisor,
  * see virConnectGetCapabilities, /capabilities/host/migration_features.
@@ -4292,6 +4332,8 @@ virDomainMigrateToURI(virDomainPtr domain,
  *                                 automatically when supported).
  *   VIR_MIGRATE_UNSAFE    Force migration even if it is considered unsafe.
  *   VIR_MIGRATE_OFFLINE Migrate offline
+ *   VIR_MIGRATE_ENABLE_POSTCOPY Enable (but do not start) post-copy
+ *   VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY Start post-copy after the first pass of pre-copy
  *
  * The operation of this API hinges on the VIR_MIGRATE_PEER2PEER flag.
  *
@@ -4336,6 +4378,17 @@ virDomainMigrateToURI(virDomainPtr domain,
  * libvirt will choose a suitable default.  Some hypervisors do
  * not support this feature and will return an error if bandwidth
  * is not 0.
+ *
+ * If you want to do post-copy migration, you have two choices:
+ * either use the low-level mechanism provided by libvirt, or its
+ * default policy. To use the low-level mechanism, you must first enable
+ * post-copy migration using the VIR_MIGRATE_ENABLE_POSTCOPY flag. Once
+ * migration is active, from a separate thread, you may start post-copy
+ * by calling virDomainMigrateStartPostCopy.
+ *
+ * The default post-copy policy implemented in libvirt is to start
+ * post-copy after the first pass of pre-copy. To enable this behaviour
+ * start migration with the VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY flag.
  *
  * To see which features are supported by the current hypervisor,
  * see virConnectGetCapabilities, /capabilities/host/migration_features.
@@ -8971,6 +9024,45 @@ virDomainMigrateGetMaxSpeed(virDomainPtr domain,
 
     if (conn->driver->domainMigrateGetMaxSpeed) {
         if (conn->driver->domainMigrateGetMaxSpeed(domain, bandwidth, flags) < 0)
+            goto error;
+        return 0;
+    }
+
+    virReportUnsupportedError();
+ error:
+    virDispatchError(conn);
+    return -1;
+}
+
+
+/**
+ * virDomainMigrateStartPostCopy:
+ * @domain: a domain object
+ * @flags: extra flags; not used yet, so callers should always pass 0
+ *
+ * Starts post-copy migration. This function has to be called while
+ * migration (initially pre-copy) is in progress. The migration operation
+ * must be called with the VIR_MIGRATE_ENABLE_POSTCOPY flag.
+ *
+ * Returns 0 in case of success, -1 otherwise.
+ */
+int
+virDomainMigrateStartPostCopy(virDomainPtr domain,
+                              unsigned int flags)
+{
+    virConnectPtr conn;
+
+    VIR_DOMAIN_DEBUG(domain);
+
+    virResetLastError();
+
+    virCheckDomainReturn(domain, -1);
+    conn = domain->conn;
+
+    virCheckReadOnlyGoto(conn->flags, error);
+
+    if (conn->driver->domainMigrateStartPostCopy) {
+        if (conn->driver->domainMigrateStartPostCopy(domain, flags) < 0)
             goto error;
         return 0;
     }

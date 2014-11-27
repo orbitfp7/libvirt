@@ -688,6 +688,7 @@ LIBVIRT_1.2.11 {
     global:
         virDomainFSInfoFree;
         virDomainGetFSInfo;
+        virDomainMigrateStartPostCopy;
 } LIBVIRT_1.2.9;
 
 LIBVIRT_1.2.12 {
