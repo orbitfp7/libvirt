@@ -2089,6 +2089,67 @@ qemuMigrationSetOffline(virQEMUDriverPtr driver,
 
 
 static int
+qemuMigrationTestPostCopy(virQEMUDriverPtr driver,
+                         virDomainObjPtr vm,
+                         qemuDomainAsyncJob job)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    int ret;
+
+    if (qemuDomainObjEnterMonitorAsync(driver, vm, job) < 0)
+        return -1;
+
+    ret = qemuMonitorGetMigrationCapability(
+                priv->mon,
+                QEMU_MONITOR_MIGRATION_CAPS_POSTCOPY);
+
+    qemuDomainObjExitMonitor(driver, vm);
+    return ret;
+}
+
+
+static int
+qemuMigrationSetPostCopy(virQEMUDriverPtr driver,
+                         virDomainObjPtr vm,
+                         qemuDomainAsyncJob job)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    int ret;
+
+    if (job != QEMU_ASYNC_JOB_MIGRATION_OUT) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+            _("Set post-copy only makes sense for outgoing migration"));
+    }
+
+    if (qemuDomainObjEnterMonitorAsync(driver, vm, job) < 0)
+        return -1;
+
+    ret = qemuMonitorGetMigrationCapability(
+                priv->mon,
+                QEMU_MONITOR_MIGRATION_CAPS_POSTCOPY);
+
+    if (ret < 0) {
+        goto cleanup;
+    } else if (ret == 0) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                       _("Post-copy migration is not supported by "
+                         "source QEMU binary"));
+        ret = -1;
+        goto cleanup;
+    }
+
+    ret = qemuMonitorSetMigrationCapability(
+                priv->mon,
+                QEMU_MONITOR_MIGRATION_CAPS_POSTCOPY,
+                true);
+
+ cleanup:
+    qemuDomainObjExitMonitor(driver, vm);
+    return ret;
+}
+
+
+static int
 qemuMigrationSetCompression(virQEMUDriverPtr driver,
                             virDomainObjPtr vm,
                             bool state,
@@ -3036,6 +3097,15 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
         dataFD[1] = -1; /* 'st' owns the FD now & will close it */
     }
 
+    if (flags & VIR_MIGRATE_ENABLE_POSTCOPY &&
+        qemuMigrationTestPostCopy(driver, vm,
+                                  QEMU_ASYNC_JOB_MIGRATION_IN) < 0) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                       _("Post-copy migration is not supported by "
+                         "target QEMU binary"));
+        goto stop;
+    }
+
     if (qemuMigrationSetCompression(driver, vm,
                                     flags & VIR_MIGRATE_COMPRESSED,
                                     QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
@@ -3882,6 +3952,18 @@ qemuMigrationRun(virQEMUDriverPtr driver,
                                flags & VIR_MIGRATE_RDMA_PIN_ALL,
                                QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
         goto cleanup;
+
+    if (flags & VIR_MIGRATE_ENABLE_POSTCOPY) {
+        if (!(flags & VIR_MIGRATE_LIVE)) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("Enabling post-copy only makes sense with "
+                             "live migration"));
+            goto cleanup;
+        }
+        if (qemuMigrationSetPostCopy(driver, vm,
+                                     QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+            goto cleanup;
+    }
 
     if (qemuDomainObjEnterMonitorAsync(driver, vm,
                                        QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
