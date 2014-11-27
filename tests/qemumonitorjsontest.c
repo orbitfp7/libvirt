@@ -1695,6 +1695,7 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStatus(const void *data)
     expectedStatus.ram_total = 1611038720;
     expectedStatus.ram_remaining = 1605013504;
     expectedStatus.ram_transferred = 3625548;
+    expectedStatus.ram_dirty_sync_count = -1;
 
     if (qemuMonitorTestAddItem(test, "query-migrate",
                                "{"

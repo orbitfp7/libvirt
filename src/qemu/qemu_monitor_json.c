@@ -2704,6 +2704,10 @@ qemuMonitorJSONGetMigrationStatusReply(virJSONValuePtr reply,
             return -1;
         }
 
+        if (virJSONValueObjectGetNumberUlong(ram, "dirty-sync-count",
+                                             &status->ram_dirty_sync_count) < 0) {
+            status->ram_dirty_sync_count = -1; /* silently ignored */
+        }
         if (virJSONValueObjectGetNumberUlong(ram, "transferred",
                                              &status->ram_transferred) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",

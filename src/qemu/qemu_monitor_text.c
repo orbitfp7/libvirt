@@ -1435,6 +1435,7 @@ int qemuMonitorTextGetMigrationStatus(qemuMonitorPtr mon,
     int ret = -1;
 
     memset(status, 0, sizeof(*status));
+    status->ram_dirty_sync_count = -1; /* not implemented for text monitor */
 
     if (qemuMonitorHMPCommand(mon, "info migrate", &reply) < 0)
         return -1;
