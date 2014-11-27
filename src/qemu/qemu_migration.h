@@ -42,7 +42,8 @@
      VIR_MIGRATE_ABORT_ON_ERROR |               \
      VIR_MIGRATE_AUTO_CONVERGE |                \
      VIR_MIGRATE_RDMA_PIN_ALL |                 \
-     VIR_MIGRATE_ENABLE_POSTCOPY)
+     VIR_MIGRATE_ENABLE_POSTCOPY |              \
+     VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
 
 /* All supported migration parameters and their types. */
 # define QEMU_MIGRATION_PARAMETERS                              \

@@ -11531,6 +11531,8 @@ qemuDomainMigratePrepare2(virConnectPtr dconn,
 
     virCheckFlags(QEMU_MIGRATION_FLAGS, -1);
 
+    if (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (flags & VIR_MIGRATE_ENABLE_POSTCOPY) {
         /* post-copy migration does not work with Sequence v2 */
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",

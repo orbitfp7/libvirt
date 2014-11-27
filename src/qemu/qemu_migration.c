@@ -2402,7 +2402,8 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
                                qemuDomainAsyncJob asyncJob,
                                virConnectPtr dconn,
                                bool abort_on_error,
-                               bool exit_on_postcopy_active)
+                               bool exit_on_postcopy_active,
+                               bool trigger_postcopy)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
     qemuDomainJobInfoPtr jobInfo = priv->job.current;
@@ -2433,6 +2434,34 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
 
         if (qemuMigrationUpdateJobStatus(driver, vm, job, asyncJob) == -1)
             break;
+
+        /* automatically switch to post-copy if the user requested so */
+        if (trigger_postcopy &&
+            jobInfo->status.status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE &&
+            jobInfo->status.ram_dirty_sync_count > 0) {
+            int rv;
+
+            /* Clear variable to prevent sending this command to qemu twice */
+            trigger_postcopy = false;
+
+            if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0) {
+                /* Migration might have finished before we got to
+                 * trigger post-copy */
+                break;
+            }
+            rv = qemuMonitorMigrateStartPostCopy(priv->mon);
+            qemuDomainObjExitMonitor(driver, vm);
+
+            if (rv < 0) {
+                virReportError(VIR_ERR_OPERATION_FAILED,
+                               _("%s: %s"), job,
+                               _("Switching to post-copy failed"));
+                if (abort_on_error)
+                    break;
+            } else {
+                VIR_DEBUG("Switched to post-copy");
+            }
+        }
 
         /* cancel migration if disk I/O error is emitted while migrating */
         if (abort_on_error &&
@@ -3106,6 +3135,8 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
         dataFD[1] = -1; /* 'st' owns the FD now & will close it */
     }
 
+    if (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (flags & VIR_MIGRATE_ENABLE_POSTCOPY &&
         qemuMigrationTestPostCopy(driver, vm,
                                   QEMU_ASYNC_JOB_MIGRATION_IN) < 0) {
@@ -3484,13 +3515,17 @@ qemuMigrationConfirmPhase(virQEMUDriverPtr driver,
     virCheckFlags(QEMU_MIGRATION_FLAGS, -1);
 
     /* Wait for post-copy to complete */
+    if (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (flags & VIR_MIGRATE_ENABLE_POSTCOPY) {
         bool abort_on_error = !!(flags & VIR_MIGRATE_ABORT_ON_ERROR);
         bool exit_on_postcopy_active = false;
+        bool trigger_postcopy = false;
         rv = qemuMigrationWaitForCompletion(driver, vm,
                                             QEMU_ASYNC_JOB_MIGRATION_OUT,
                                             conn, abort_on_error,
-                                            exit_on_postcopy_active);
+                                            exit_on_postcopy_active,
+                                            trigger_postcopy);
         if (rv < 0)
             goto cleanup;
     }
@@ -3974,6 +4009,8 @@ qemuMigrationRun(virQEMUDriverPtr driver,
                                QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
         goto cleanup;
 
+    if (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (flags & VIR_MIGRATE_ENABLE_POSTCOPY) {
         if (!(flags & VIR_MIGRATE_LIVE)) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -4082,10 +4119,12 @@ qemuMigrationRun(virQEMUDriverPtr driver,
 
     {
         bool exit_on_postcopy_active = true;
+        bool trigger_postcopy = (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY);
         rc = qemuMigrationWaitForCompletion(driver, vm,
                                             QEMU_ASYNC_JOB_MIGRATION_OUT,
                                             dconn, abort_on_error,
-                                            exit_on_postcopy_active);
+                                            exit_on_postcopy_active,
+                                            trigger_postcopy);
     }
 
     if (rc == -2)
@@ -5551,9 +5590,11 @@ qemuMigrationToFile(virQEMUDriverPtr driver, virDomainObjPtr vm,
     {
         bool abort_on_error = false;
         bool exit_on_postcopy_active = true;
+        bool trigger_postcopy = false;
         rc = qemuMigrationWaitForCompletion(driver, vm, asyncJob, NULL,
                                             abort_on_error,
-                                            exit_on_postcopy_active);
+                                            exit_on_postcopy_active,
+                                            trigger_postcopy);
     }
 
     if (rc < 0) {
