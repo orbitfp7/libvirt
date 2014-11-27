@@ -9518,6 +9518,10 @@ static const vshCmdOptDef opts_migrate[] = {
      .type = VSH_OT_INT,
      .help = N_("force guest to suspend if live migration exceeds timeout (in seconds)")
     },
+    {.name = "enable-postcopy",
+     .type = VSH_OT_BOOL,
+     .help = N_("enable (but do not start) post-copy migration; to start post-copy use migrate-start-postcopy")
+    },
     {.name = "xml",
      .type = VSH_OT_STRING,
      .help = N_("filename containing updated XML for the target")
@@ -9599,6 +9603,8 @@ doMigrate(void *opaque)
         VIR_FREE(xml);
     }
 
+    if (vshCommandOptBool(cmd, "enable-postcopy"))
+        flags |= VIR_MIGRATE_ENABLE_POSTCOPY;
     if (vshCommandOptBool(cmd, "live"))
         flags |= VIR_MIGRATE_LIVE;
     if (vshCommandOptBool(cmd, "p2p"))
@@ -12396,6 +12402,44 @@ cmdDomFSInfo(vshControl *ctl, const vshCmd *cmd)
     return ret >= 0;
 }
 
+/*
+ * "migrate-start-postcopy" command
+ */
+static const vshCmdInfo info_migratestartpostcopy[] = {
+    {.name = "help",
+     .data = N_("Switch running migration from pre-copy to post-copy")
+    },
+    {.name = "desc",
+     .data = N_("Switch running migration from pre-copy to post-copy")
+    },
+    {.name = NULL}
+};
+
+static const vshCmdOptDef opts_migratestartpostcopy[] = {
+    {.name = "domain",
+     .type = VSH_OT_DATA,
+     .flags = VSH_OFLAG_REQ,
+     .help = N_("domain name, id or uuid")
+    },
+    {.name = NULL}
+};
+
+static bool
+cmdMigrateStartPostCopy(vshControl *ctl, const vshCmd *cmd)
+{
+    virDomainPtr dom;
+    bool ret = true;
+
+    if (!(dom = vshCommandOptDomain(ctl, cmd, NULL)))
+        return false;
+
+    if (virDomainMigrateStartPostCopy(dom, 0) < 0)
+        ret = false;
+
+    virDomainFree(dom);
+    return ret;
+}
+
 const vshCmdDef domManagementCmds[] = {
     {.name = "attach-device",
      .handler = cmdAttachDevice,
@@ -12913,6 +12957,12 @@ const vshCmdDef domManagementCmds[] = {
      .handler = cmdVNCDisplay,
      .opts = opts_vncdisplay,
      .info = info_vncdisplay,
+     .flags = 0
+    },
+    {.name = "migrate-start-postcopy",
+     .handler = cmdMigrateStartPostCopy,
+     .opts = opts_migratestartpostcopy,
+     .info = info_migratestartpostcopy,
      .flags = 0
     },
     {.name = NULL}

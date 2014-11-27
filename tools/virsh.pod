@@ -1438,6 +1438,7 @@ to the I<uri> namespace is displayed instead of being modified.
 [I<--compressed>] [I<--abort-on-error>] [I<--auto-converge>]
 I<domain> I<desturi> [I<migrateuri>] [I<graphicsuri>] [I<listen-address>]
 [I<dname>] [I<--timeout> B<seconds>] [I<--xml> B<file>]
+[I<--enable-postcopy>]
 
 Migrate domain to another host.  Add I<--live> for live migration; <--p2p>
 for peer-2-peer migration; I<--direct> for direct migration; or I<--tunnelled>
@@ -1484,6 +1485,11 @@ between source and destination in accessing underlying storage.
 I<--timeout> B<seconds> forces guest to suspend when live migration exceeds
 that many seconds, and
 then the migration will complete offline. It can only be used with I<--live>.
+
+I<--enable-postcopy> enables post-copy logic in migration, but does not
+actually start post-copy, i.e., migration is started in pre-copy mode.
+Once migration started, the user may switch to post-copy using the
+B<migrate-start-postcopy> command sent from another virsh instance.
 
 Running migration can be canceled by interrupting virsh (usually using
 C<Ctrl-C>) or by B<domjobabort> command sent from another virsh instance.
@@ -1561,6 +1567,11 @@ destination side should bind to for incoming migration. Both IPv4 and IPv6
 addresses are accepted as well as hostnames (the resolving is done on
 destination). Some hypervisors do not support this feature and will return an
 error if this parameter is used.
+
+=item B<migrate-start-postcopy> I<domain>
+
+Switch the current migration from pre-copy to post-copy. A migration needs
+to be in progress, that has been started with I<--enable-postcopy>.
 
 =item B<migrate-setmaxdowntime> I<domain> I<downtime>
 
