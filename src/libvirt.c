@@ -1045,6 +1045,7 @@ virConnectGetDefaultURI(virConfPtr conf,
     int ret = -1;
     virConfValuePtr value = NULL;
     const char *defname = virGetEnvBlockSUID("LIBVIRT_DEFAULT_URI");
+    const char *fallback = "qemu:///system";
     if (defname && *defname) {
         VIR_DEBUG("Using LIBVIRT_DEFAULT_URI '%s'", defname);
         *name = defname;
@@ -1056,6 +1057,9 @@ virConnectGetDefaultURI(virConfPtr conf,
         }
         VIR_DEBUG("Using config file uri '%s'", value->str);
         *name = value->str;
+    } else {
+        VIR_DEBUG("Falling back to uri qemu:///system");
+        *name = fallback;
     }
 
     ret = 0;
