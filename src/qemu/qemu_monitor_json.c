@@ -2695,7 +2695,8 @@ qemuMonitorJSONGetMigrationStatusReply(virJSONValuePtr reply,
         status->setup_time_set = true;
 
     if (status->status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE ||
-        status->status == QEMU_MONITOR_MIGRATION_STATUS_COMPLETED) {
+        status->status == QEMU_MONITOR_MIGRATION_STATUS_COMPLETED ||
+        status->status == QEMU_MONITOR_MIGRATION_STATUS_POSTCOPY_ACTIVE)  {
         virJSONValuePtr ram = virJSONValueObjectGet(ret, "ram");
         if (!ram) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -2922,6 +2923,26 @@ int qemuMonitorJSONMigrate(qemuMonitorPtr mon,
                                  NULL);
     virJSONValuePtr reply = NULL;
 
+    if (!cmd)
+        return -1;
+
+    ret = qemuMonitorJSONCommand(mon, cmd, &reply);
+
+    if (ret == 0)
+        ret = qemuMonitorJSONCheckError(cmd, reply);
+
+    virJSONValueFree(cmd);
+    virJSONValueFree(reply);
+    return ret;
+}
+
+int qemuMonitorJSONMigrateStartPostCopy(qemuMonitorPtr mon)
+{
+    int ret;
+    virJSONValuePtr cmd;
+    cmd = qemuMonitorJSONMakeCommand("migrate-start-postcopy", NULL);
+
+    virJSONValuePtr reply = NULL;
     if (!cmd)
         return -1;
 

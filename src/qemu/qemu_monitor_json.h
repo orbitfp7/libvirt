@@ -157,6 +157,7 @@ int qemuMonitorJSONGetSpiceMigrationStatus(qemuMonitorPtr mon,
                                            bool *spice_migrated);
 
 
+int qemuMonitorJSONMigrateStartPostCopy(qemuMonitorPtr mon);
 int qemuMonitorJSONMigrateCancel(qemuMonitorPtr mon);
 
 int qemuMonitorJSONGetDumpGuestMemoryCapability(qemuMonitorPtr mon,
