@@ -2557,6 +2557,8 @@ qemuMigrationSetCOLO(virQEMUDriverPtr driver,
  cleanup:
     if (qemuDomainObjExitMonitor(driver, vm) < 0)
         ret = -1;
+    if (ret == 0)
+        priv->job.postcopyEnabled = state;
     return ret;
 }
 

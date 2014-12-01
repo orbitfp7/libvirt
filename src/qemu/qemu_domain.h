@@ -138,6 +138,7 @@ struct qemuDomainJobObj {
     qemuDomainJobInfoPtr completed;     /* statistics data of a recently completed job */
     bool abortJob;                      /* abort of the job requested */
     bool spiceMigrated;                 /* spice migration completed */
+    bool postcopyEnabled;               /* post-copy migration was enabled */
 };
 
 typedef void (*qemuDomainCleanupCallback)(virQEMUDriverPtr driver,
