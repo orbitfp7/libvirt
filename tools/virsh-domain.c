@@ -9653,6 +9653,10 @@ static const vshCmdOptDef opts_migrate[] = {
      .type = VSH_OT_BOOL,
      .help = N_("enable post-copy migration; switch to it using migrate-postcopy command")
     },
+    {.name = "postcopy-after-precopy",
+     .type = VSH_OT_BOOL,
+     .help = N_("automatically switch to post-copy migration after one pass of pre-copy")
+    },
     {.name = "migrateuri",
      .type = VSH_OT_STRING,
      .help = N_("migration URI, usually can be omitted")
@@ -9830,6 +9834,8 @@ doMigrate(void *opaque)
 
     if (vshCommandOptBool(cmd, "postcopy"))
         flags |= VIR_MIGRATE_POSTCOPY;
+    if (vshCommandOptBool(cmd, "postcopy-after-precopy"))
+        flags |= VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY;
 
     if (flags & VIR_MIGRATE_PEER2PEER || vshCommandOptBool(cmd, "direct")) {
         if (virDomainMigrateToURI3(dom, desturi, params, nparams, flags) == 0)
