@@ -8292,6 +8292,7 @@ static virHypervisorDriver hypervisor_driver = {
     .domainInterfaceAddresses = remoteDomainInterfaceAddresses, /* 1.2.14 */
     .domainSetUserPassword = remoteDomainSetUserPassword, /* 1.2.16 */
     .domainRename = remoteDomainRename, /* 1.2.19 */
+    .domainMigrateStartPostCopy = remoteDomainMigrateStartPostCopy, /* 1.3.2 */
 };
 
 static virNetworkDriver network_driver = {

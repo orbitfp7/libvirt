@@ -638,6 +638,10 @@ typedef int
                                     const char *dom_xml);
 
 typedef int
+(*virDrvDomainMigrateStartPostCopy)(virDomainPtr domain,
+                                    unsigned int flags);
+
+typedef int
 (*virDrvConnectIsEncrypted)(virConnectPtr conn);
 
 typedef int
@@ -1443,6 +1447,7 @@ struct _virHypervisorDriver {
     virDrvDomainGetFSInfo domainGetFSInfo;
     virDrvDomainInterfaceAddresses domainInterfaceAddresses;
     virDrvDomainSetUserPassword domainSetUserPassword;
+    virDrvDomainMigrateStartPostCopy domainMigrateStartPostCopy;
 };
 
 

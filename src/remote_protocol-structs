@@ -2702,6 +2702,10 @@ struct remote_domain_event_callback_migration_iteration_msg {
         remote_nonnull_domain      dom;
         int                        iteration;
 };
+struct remote_domain_migrate_start_post_copy_args {
+        remote_nonnull_domain      dom;
+        u_int                      flags;
+};
 enum remote_procedure {
         REMOTE_PROC_CONNECT_OPEN = 1,
         REMOTE_PROC_CONNECT_CLOSE = 2,
@@ -3062,4 +3066,5 @@ enum remote_procedure {
         REMOTE_PROC_DOMAIN_SET_USER_PASSWORD = 357,
         REMOTE_PROC_DOMAIN_RENAME = 358,
         REMOTE_PROC_DOMAIN_EVENT_CALLBACK_MIGRATION_ITERATION = 359,
+        REMOTE_PROC_DOMAIN_MIGRATE_START_POST_COPY = 360,
 };

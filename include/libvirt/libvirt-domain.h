@@ -663,6 +663,8 @@ typedef enum {
     VIR_MIGRATE_AUTO_CONVERGE     = (1 << 13), /* force convergence */
     VIR_MIGRATE_RDMA_PIN_ALL      = (1 << 14), /* RDMA memory pinning */
     VIR_MIGRATE_COLO              = (1 << 15), /* COLO migration */
+    VIR_MIGRATE_POSTCOPY          = (1 << 16), /* enable (but do not start) post-copy migration */
+    VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY = (1 << 17), /* switch to post-copy after the first pre-copy iteration */
 } virDomainMigrateFlags;
 
 
@@ -810,6 +812,9 @@ int virDomainMigrateSetMaxSpeed(virDomainPtr domain,
 int virDomainMigrateGetMaxSpeed(virDomainPtr domain,
                                 unsigned long *bandwidth,
                                 unsigned int flags);
+
+int virDomainMigrateStartPostCopy(virDomainPtr domain,
+                                  unsigned int flags);
 
 char * virConnectGetDomainCapabilities(virConnectPtr conn,
                                        const char *emulatorbin,
