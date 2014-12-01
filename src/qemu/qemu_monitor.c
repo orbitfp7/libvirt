@@ -168,7 +168,8 @@ VIR_ENUM_IMPL(qemuMonitorMigrationStatus,
 
 VIR_ENUM_IMPL(qemuMonitorMigrationCaps,
               QEMU_MONITOR_MIGRATION_CAPS_LAST,
-              "xbzrle", "auto-converge", "rdma-pin-all", "events", "x-colo")
+              "xbzrle", "auto-converge", "rdma-pin-all", "events", "x-colo",
+              "x-postcopy-ram")
 
 VIR_ENUM_IMPL(qemuMonitorVMStatus,
               QEMU_MONITOR_VM_STATUS_LAST,
@@ -3817,4 +3818,15 @@ qemuMonitorMigrateIncoming(qemuMonitorPtr mon,
     QEMU_CHECK_MONITOR_JSON(mon);
 
     return qemuMonitorJSONMigrateIncoming(mon, uri);
+}
+
+
+int
+qemuMonitorMigrateStartPostCopy(qemuMonitorPtr mon)
+{
+    VIR_DEBUG("mon=%p", mon);
+
+    QEMU_CHECK_MONITOR_JSON(mon);
+
+    return qemuMonitorJSONMigrateStartPostCopy(mon);
 }
