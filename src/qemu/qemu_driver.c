@@ -12585,10 +12585,12 @@ static int qemuDomainMigrateStartPostCopy(virDomainPtr dom,
     VIR_DEBUG("Starting post-copy");
     qemuDomainObjEnterMonitor(driver, vm);
     ret = qemuMonitorMigrateStartPostCopy(priv->mon);
-    qemuDomainObjExitMonitor(driver, vm);
+    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+        return -1;
 
  endjob:
-    if (!qemuDomainObjEndJob(driver, vm))
+    qemuDomainObjEndJob(driver, vm);
+    if (!virObjectUnref(vm))
         vm = NULL;
 
  cleanup:

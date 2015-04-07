@@ -5568,7 +5568,6 @@ enum remote_procedure {
     REMOTE_PROC_DOMAIN_GET_FSINFO = 349,
 
     /**
-<<<<<<< HEAD
      * @priority: high
      * @generate: both
      * @acl: domain:write

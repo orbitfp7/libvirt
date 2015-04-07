@@ -2103,7 +2103,8 @@ qemuMigrationTestPostCopy(virQEMUDriverPtr driver,
                 priv->mon,
                 QEMU_MONITOR_MIGRATION_CAPS_POSTCOPY);
 
-    qemuDomainObjExitMonitor(driver, vm);
+    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+        return -1;
     return ret;
 }
 
@@ -2144,7 +2145,8 @@ qemuMigrationSetPostCopy(virQEMUDriverPtr driver,
                 true);
 
  cleanup:
-    qemuDomainObjExitMonitor(driver, vm);
+    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+        return -1;
     return ret;
 }
 
@@ -2450,7 +2452,8 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
                 break;
             }
             rv = qemuMonitorMigrateStartPostCopy(priv->mon);
-            qemuDomainObjExitMonitor(driver, vm);
+            if (qemuDomainObjExitMonitor(driver, vm) < 0)
+                return -1;
 
             if (rv < 0) {
                 virReportError(VIR_ERR_OPERATION_FAILED,
