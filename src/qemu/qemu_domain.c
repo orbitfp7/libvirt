@@ -288,6 +288,10 @@ qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
     info->dataRemaining = info->memRemaining + info->fileRemaining;
     info->dataProcessed = info->memProcessed + info->fileProcessed;
 
+    info->chkptSize = jobInfo->status.chkpt_size;
+    info->chkptLength = jobInfo->status.chkpt_length;
+    info->chkptPause = jobInfo->status.chkpt_pause;
+
     return 0;
 }
 
@@ -363,6 +367,17 @@ qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
         virTypedParamsAddULLong(&par, &npar, &maxpar,
                                 VIR_DOMAIN_JOB_MEMORY_REMAINING,
                                 stats->ram_remaining) < 0)
+        goto error;
+
+    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+                                VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
+                                status->chkpt_size) < 0 ||
+        virTypedParamsAddULLong(&par, &npar, &maxpar,
+                                VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
+                                status->chkpt_length) < 0 ||
+        virTypedParamsAddULLong(&par, &npar, &maxpar,
+                                VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
+                                status->chkpt_pause) < 0)
         goto error;
 
     if (stats->ram_bps &&

@@ -516,6 +516,11 @@ struct _qemuMonitorMigrationStats {
     unsigned long long xbzrle_pages;
     unsigned long long xbzrle_cache_miss;
     unsigned long long xbzrle_overflow;
+
+    unsigned long long chkpt_size;
+    unsigned long long chkpt_length;
+    unsigned long long chkpt_pause;
+    
 };
 
 int qemuMonitorGetMigrationStats(qemuMonitorPtr mon,

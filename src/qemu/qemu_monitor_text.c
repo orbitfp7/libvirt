@@ -1353,6 +1353,10 @@ int qemuMonitorTextSetMigrationDowntime(qemuMonitorPtr mon,
 #define MIGRATION_DISK_REMAINING_PREFIX "remaining disk: "
 #define MIGRATION_DISK_TOTAL_PREFIX "total disk: "
 
+#define CHECKPOINT_SIZE_PREFIX "colo checkpoint size: Latest:"
+#define CHECKPOINT_LENGTH_PREFIX "colo checkpoint (ms): Latest:"
+#define CHECKPOINT_PAUSE_PREFIX "colo paused time (ms): Latest:"
+
 int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                                      qemuMonitorMigrationStatsPtr stats)
 {
@@ -1467,6 +1471,43 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                 goto cleanup;
             }
             stats->disk_total *= 1024;
+
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_LENGTH_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_LENGTH_PREFIX);
+
+            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_length) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint length time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_PAUSE_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_PAUSE_PREFIX);
+
+            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_pause) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint pause time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_SIZE_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_SIZE_PREFIX);
+
+            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_size) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint size "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
         }
     }
 

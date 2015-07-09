@@ -826,6 +826,16 @@ qemuMigrationCookieStatisticsXMLFormat(virBufferPtr buf,
                           stats->xbzrle_overflow);
     }
 
+    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                      VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
+                      status->chkpt_size);
+    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                      VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
+                      status->chkpt_length);
+    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                      VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
+                      status->chkpt_length);
+
     virBufferAdjustIndent(buf, -2);
     virBufferAddLit(buf, "</statistics>\n");
 }
@@ -1174,6 +1184,13 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
                       ctxt, &stats->xbzrle_cache_miss);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW "[1])",
                       ctxt, &stats->xbzrle_overflow);
+
+    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_SIZE "[1])",
+                      ctxt, &status->chkpt_size);
+    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_LENGTH "[1])",
+                      ctxt, &status->chkpt_length);
+    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PAUSE "[1])",
+                      ctxt, &status->chkpt_pause);
 
  cleanup:
     ctxt->node = save_ctxt;
