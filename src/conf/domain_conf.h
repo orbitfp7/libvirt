@@ -1079,6 +1079,10 @@ struct _virDomainNetDef {
     virDomainNetIpDefPtr *ips;
     size_t nroutes;
     virNetworkRouteDefPtr *routes;
+    struct {
+        char *forward;
+        char *failover;
+    } colo;
 };
 
 /* Used for prefix of ifname of any network name generated dynamically

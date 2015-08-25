@@ -8437,6 +8437,8 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
     virDomainNetIpDefPtr *ips = NULL;
     size_t nroutes = 0;
     virNetworkRouteDefPtr *routes = NULL;
+    char *colo_forward = NULL;
+    char *colo_failover = NULL;
 
     if (VIR_ALLOC(def) < 0)
         return NULL;
@@ -8624,6 +8626,26 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
                 if (!vhost_path && (tmp = virXMLPropString(cur, "vhost")))
                     vhost_path = virFileSanitizePath(tmp);
                 VIR_FREE(tmp);
+            } else if (!colo_forward &&
+                       xmlStrEqual(cur->name, BAD_CAST "colo_forward")) {
+                if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+                    colo_forward = virXMLPropString(cur, "bridge");
+                } else {
+                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                   _("<colo_forward> element unsupported for"
+                                     " <interface type='%s'>"), type);
+                    goto error;
+                }
+            } else if (!colo_failover &&
+                       xmlStrEqual(cur->name, BAD_CAST "colo_failover")) {
+                if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+                    colo_failover = virXMLPropString(cur, "bridge");
+                } else {
+                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                   _("<colo_failover> element unsupported for"
+                                     " <interface type='%s'>"), type);
+                    goto error;
+                }
             }
         }
         cur = cur->next;
@@ -8917,6 +8939,14 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
         def->ifname_guest_actual = ifname_guest_actual;
         ifname_guest_actual = NULL;
     }
+    if (colo_forward != NULL) {
+        def->colo.forward = colo_forward;
+        colo_forward = NULL;
+    }
+    if (colo_failover != NULL) {
+        def->colo.failover = colo_failover;
+        colo_failover = NULL;
+    }
 
     /* NIC model (see -net nic,model=?).  We only check that it looks
      * reasonable, not that it is a supported NIC type.  FWIW kvm
@@ -9182,6 +9212,8 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
     VIR_FREE(localaddr);
     VIR_FREE(localport);
     virNWFilterHashTableFree(filterparams);
+    VIR_FREE(colo_forward);
+    VIR_FREE(colo_failover);
 
     return def;
 
@@ -19950,6 +19982,20 @@ virDomainNetDefFormat(virBufferPtr buf,
         virBufferAsprintf(buf, "<link state='%s'/>\n",
                           virDomainNetInterfaceLinkStateTypeToString(def->linkstate));
     }
+
+    if (def->colo.forward) {
+        if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+            virBufferEscapeString(buf, "<colo_forward bridge='%s'/>\n",
+                                  def->colo.forward);
+        }
+    }
+    if (def->colo.failover) {
+        if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+            virBufferEscapeString(buf, "<colo_failover bridge='%s'/>\n",
+                                  def->colo.failover);
+        }
+    }
+
     if (virDomainDeviceInfoFormat(buf, &def->info,
                                   flags | VIR_DOMAIN_DEF_FORMAT_ALLOW_BOOT
                                   | VIR_DOMAIN_DEF_FORMAT_ALLOW_ROM) < 0)

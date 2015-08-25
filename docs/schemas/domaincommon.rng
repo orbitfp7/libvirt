@@ -2050,6 +2050,22 @@
               <ref name="virtualPortProfile"/>
             </optional>
             <ref name="interface-options"/>
+            <optional>
+              <element name="colo_forward">
+                <attribute name="bridge">
+                  <ref name="deviceName"/>
+                </attribute>
+                <empty/>
+              </element>
+            </optional>
+            <optional>
+              <element name="colo_failover">
+                <attribute name="bridge">
+                  <ref name="deviceName"/>
+                </attribute>
+                <empty/>
+              </element>
+            </optional>
           </interleave>
         </group>
         <group>
