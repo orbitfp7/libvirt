@@ -2628,6 +2628,36 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                 return -1;
             }
         }
+
+        virJSONValuePtr chkpt = virJSONValueObjectGet(ret, "checkpoint");
+        if (chkpt) {
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "size",
+                                                  &status->chkpt_size);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but "
+                                 "'size' data was missing"));
+                return -1;
+            }
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "length",
+                                                  &status->chkpt_length);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'length' "
+                                 "data was missing"));
+                return -1;
+            }
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "pause",
+                                                  &status->chkpt_pause);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'pause' "
+                                 "data was missing"));
+                return -1;
+            }
+        }
         break;
     }
 
