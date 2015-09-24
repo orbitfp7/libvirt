@@ -19858,6 +19858,10 @@ virDomainNetDefFormat(virBufferPtr buf,
         case VIR_DOMAIN_NET_TYPE_BRIDGE:
             virBufferEscapeString(buf, "<source bridge='%s'/>\n",
                                   def->data.bridge.brname);
+            virBufferEscapeString(buf, "<colo_forward bridge='%s'/>\n",
+                                  def->colo.forward);
+            virBufferEscapeString(buf, "<colo_failover bridge='%s'/>\n",
+                                  def->colo.failover);
             break;
 
         case VIR_DOMAIN_NET_TYPE_SERVER:
@@ -20009,18 +20013,6 @@ virDomainNetDefFormat(virBufferPtr buf,
                           virDomainNetInterfaceLinkStateTypeToString(def->linkstate));
     }
 
-    if (def->colo.forward) {
-        if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
-            virBufferEscapeString(buf, "<colo_forward bridge='%s'/>\n",
-                                  def->colo.forward);
-        }
-    }
-    if (def->colo.failover) {
-        if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
-            virBufferEscapeString(buf, "<colo_failover bridge='%s'/>\n",
-                                  def->colo.failover);
-        }
-    }
     if (def->colo.script) {
         virBufferEscapeString(buf, "<colo_script path='%s'/>\n",
                               def->colo.script);
