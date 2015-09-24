@@ -1082,6 +1082,7 @@ struct _virDomainNetDef {
     struct {
         char *forward;
         char *failover;
+        char *script;
     } colo;
 };
 

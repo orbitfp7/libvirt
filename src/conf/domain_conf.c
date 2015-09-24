@@ -8439,6 +8439,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
     virNetworkRouteDefPtr *routes = NULL;
     char *colo_forward = NULL;
     char *colo_failover = NULL;
+    char *colo_script = NULL;
 
     if (VIR_ALLOC(def) < 0)
         return NULL;
@@ -8643,6 +8644,16 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
                 } else {
                     virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                                    _("<colo_failover> element unsupported for"
+                                     " <interface type='%s'>"), type);
+                    goto error;
+                }
+            } else if (!colo_script &&
+                       xmlStrEqual(cur->name, BAD_CAST "colo_script")) {
+                if (def->type == VIR_DOMAIN_NET_TYPE_BRIDGE) {
+                    colo_script = virXMLPropString(cur, "path");
+                } else {
+                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                                   _("<colo_script> element unsupported for"
                                      " <interface type='%s'>"), type);
                     goto error;
                 }
@@ -8947,6 +8958,10 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
         def->colo.failover = colo_failover;
         colo_failover = NULL;
     }
+    if (colo_script != NULL) {
+        def->colo.script = colo_script;
+        colo_script = NULL;
+    }
 
     /* NIC model (see -net nic,model=?).  We only check that it looks
      * reasonable, not that it is a supported NIC type.  FWIW kvm
@@ -9214,6 +9229,7 @@ virDomainNetDefParseXML(virDomainXMLOptionPtr xmlopt,
     virNWFilterHashTableFree(filterparams);
     VIR_FREE(colo_forward);
     VIR_FREE(colo_failover);
+    VIR_FREE(colo_script);
 
     return def;
 
@@ -19994,6 +20010,10 @@ virDomainNetDefFormat(virBufferPtr buf,
             virBufferEscapeString(buf, "<colo_failover bridge='%s'/>\n",
                                   def->colo.failover);
         }
+    }
+    if (def->colo.script) {
+        virBufferEscapeString(buf, "<colo_script path='%s'/>\n",
+                              def->colo.script);
     }
 
     if (virDomainDeviceInfoFormat(buf, &def->info,
