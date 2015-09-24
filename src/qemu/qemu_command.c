@@ -5352,7 +5352,8 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
     virQEMUDriverConfigPtr cfg = virQEMUDriverGetConfig(driver);
     size_t i;
 
-    if (net->script && netType != VIR_DOMAIN_NET_TYPE_ETHERNET) {
+    if ((net->script || net->downscript) &&
+            netType != VIR_DOMAIN_NET_TYPE_ETHERNET) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                        _("scripts are not supported on interfaces of type %s"),
                        virDomainNetTypeToString(netType));
@@ -5384,6 +5385,15 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
         }
         type_sep = ',';
         is_tap = true;
+
+        if (net->colo.forward) {
+            virBufferAsprintf(&buf, "%cforward_nic=%s", type_sep,
+                              net->colo.forward);
+        }
+        if (net->colo.script) {
+            virBufferAsprintf(&buf, "%ccolo_script=%s", type_sep,
+                              net->colo.script);
+        }
         break;
 
     case VIR_DOMAIN_NET_TYPE_ETHERNET:
@@ -5395,6 +5405,11 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
         if (net->script) {
             virBufferAsprintf(&buf, "%cscript=%s", type_sep,
                               net->script);
+            type_sep = ',';
+        }
+        if (net->downscript) {
+            virBufferAsprintf(&buf, "%cdownscript=%s", type_sep,
+                              net->downscript);
             type_sep = ',';
         }
         is_tap = true;
