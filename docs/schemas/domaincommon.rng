@@ -2394,6 +2394,14 @@
         </element>
       </optional>
       <optional>
+        <element name="downscript">
+          <attribute name="path">
+            <ref name="filePath"/>
+          </attribute>
+          <empty/>
+        </element>
+      </optional>
+      <optional>
         <element name="backenddomain">
           <attribute name="name">
             <ref name="domainName"/>

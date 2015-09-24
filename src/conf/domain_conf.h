@@ -1064,6 +1064,7 @@ struct _virDomainNetDef {
         unsigned long sndbuf;
     } tune;
     char *script;
+    char *downscript;
     char *domain_name; /* backend domain name */
     char *ifname;
     char *ifname_guest;
