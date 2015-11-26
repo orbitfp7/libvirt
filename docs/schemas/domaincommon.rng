@@ -1576,6 +1576,9 @@
       <optional>
         <ref name="driverIOThread"/>
       </optional>
+      <optional>
+        <ref name="driverMode"/>
+      </optional>
       <empty/>
     </element>
   </define>
@@ -1592,7 +1595,15 @@
       </attribute>
     </optional>
   </define>
-
+  <define name="driverMode">
+    <optional>
+      <attribute name="mode">
+        <choice>
+          <ref name="storageMode"/>
+        </choice>
+      </attribute>
+    </optional>
+  </define>
   <define name="driverCache">
     <attribute name="cache">
       <choice>

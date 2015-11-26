@@ -80,6 +80,13 @@
     </choice>
   </define>
 
+  <define name="storageMode">
+    <choice>
+      <value>primary</value>
+      <value>secondary</value>
+    </choice>
+  </define>
+
   <define name='storageStartupPolicy'>
     <!-- Use a combine='choice' override in client files that want to
          add additional attributes to a <source> sub-element

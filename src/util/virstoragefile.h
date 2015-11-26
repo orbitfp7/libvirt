@@ -90,6 +90,17 @@ typedef enum {
 VIR_ENUM_DECL(virStorageFileFormat);
 
 typedef enum {
+    VIR_STORAGE_MODE_NONE,
+
+    VIR_STORAGE_MODE_PRIMARY,
+    VIR_STORAGE_MODE_SECONDARY,
+
+    VIR_STORAGE_MODE_LAST,
+} virStorageMode;
+
+VIR_ENUM_DECL(virStorageMode);
+
+typedef enum {
     VIR_STORAGE_FILE_FEATURE_LAZY_REFCOUNTS = 0,
 
     VIR_STORAGE_FILE_FEATURE_LAST
@@ -282,6 +293,7 @@ struct _virStorageSource {
     /* Name of the child backing store recorded in metadata of the
      * current file.  */
     char *backingStoreRaw;
+    int mode; /* virStorageMode */
 };
 
 

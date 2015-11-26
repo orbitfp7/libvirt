@@ -6528,6 +6528,7 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
     char *sgio = NULL;
     char *driverName = NULL;
     char *driverType = NULL;
+    char *driverMode = NULL;
     bool source = false;
     char *target = NULL;
     char *trans = NULL;
@@ -6684,6 +6685,7 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
                     driverType[1] = 'a';
                     driverType[2] = 'w';
                 }
+                driverMode = virXMLPropString(cur, "mode");
                 cachetag = virXMLPropString(cur, "cache");
                 error_policy = virXMLPropString(cur, "error_policy");
                 rerror_policy = virXMLPropString(cur, "rerror_policy");
@@ -7378,6 +7380,16 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
         }
     }
 
+    if (driverMode) {
+        def->src->mode = virStorageModeTypeFromString(driverMode);
+        if (def->src->mode <= 0) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           _("unknown driver mode value '%s'"),
+                           driverMode);
+            goto error;
+        }
+    }
+
     if (!(flags & VIR_DOMAIN_DEF_PARSE_DISK_SOURCE)) {
         if (virDomainDiskBackingStoreParse(ctxt, def->src) < 0)
             goto error;
@@ -7396,6 +7408,7 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
     VIR_FREE(device);
     virStorageAuthDefFree(authdef);
     VIR_FREE(driverType);
+    VIR_FREE(driverMode);
     VIR_FREE(driverName);
     VIR_FREE(cachetag);
     VIR_FREE(error_policy);

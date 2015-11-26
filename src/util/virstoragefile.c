@@ -67,6 +67,12 @@ VIR_ENUM_IMPL(virStorageFileFormat,
               /* Formats with backing file below here */
               "cow", "qcow", "qcow2", "qed", "vmdk")
 
+VIR_ENUM_IMPL(virStorageMode,
+              VIR_STORAGE_MODE_LAST,
+              "none",
+              "primary",
+              "secondary")
+
 VIR_ENUM_IMPL(virStorageFileFeature,
               VIR_STORAGE_FILE_FEATURE_LAST,
               "lazy_refcounts",
