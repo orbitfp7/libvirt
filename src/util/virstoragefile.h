@@ -73,6 +73,7 @@ typedef enum {
     VIR_STORAGE_FILE_FAT,
     VIR_STORAGE_FILE_VHD,
     VIR_STORAGE_FILE_PLOOP,
+    VIR_STORAGE_FILE_REPLICATION,
 
     /* Not a format, but a marker: all formats below this point have
      * libvirt support for following a backing chain */

@@ -76,6 +76,7 @@
       <value>fat</value>
       <value>vhd</value>
       <value>ploop</value>
+      <value>replication</value>
       <ref name='storageFormatBacking'/>
     </choice>
   </define>
