@@ -1171,7 +1171,9 @@ qemuAssignDeviceAliases(virDomainDefPtr def, virQEMUCapsPtr qemuCaps)
     size_t i;
 
     for (i = 0; i < def->ndisks; i++) {
-        if (qemuAssignDeviceDiskAlias(def, def->disks[i], qemuCaps) < 0)
+        // TODO(ORBIT) We allow user defined aliases atm, might change
+        if (!def->disks[i]->info.alias &&
+            qemuAssignDeviceDiskAlias(def, def->disks[i], qemuCaps) < 0)
             return -1;
     }
     for (i = 0; i < def->nnets; i++) {

@@ -4786,7 +4786,7 @@ virDomainDeviceInfoParseXML(xmlNodePtr node,
     while (cur != NULL) {
         if (cur->type == XML_ELEMENT_NODE) {
             if (alias == NULL &&
-                !(flags & VIR_DOMAIN_DEF_PARSE_INACTIVE) &&
+                // !(flags & VIR_DOMAIN_DEF_PARSE_INACTIVE) && TODO(ORBIT)
                 xmlStrEqual(cur->name, BAD_CAST "alias")) {
                 alias = cur;
             } else if (address == NULL &&
