@@ -546,6 +546,10 @@ const char *virEnumToString(const char *const*types,
  */
 int virDiskNameParse(const char *name, int *disk, int *partition)
 {
+    if (STREQ(name, "replication")) {
+        // TODO(ORBIT)
+        return 0;
+    }
     const char *ptr = NULL;
     char *rem;
     int idx = 0;

@@ -7092,7 +7092,8 @@ virDomainDiskDefParseXML(virDomainXMLOptionPtr xmlopt,
             !STRPREFIX((const char *)target, "sd") &&
             !STRPREFIX((const char *)target, "vd") &&
             !STRPREFIX((const char *)target, "xvd") &&
-            !STRPREFIX((const char *)target, "ubd")) {
+            !STRPREFIX((const char *)target, "ubd") &&
+            STRNEQ(target, "replication")) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("Invalid harddisk device name: %s"), target);
             goto error;

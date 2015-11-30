@@ -10134,7 +10134,7 @@ qemuBuildCommandLine(virConnectPtr conn,
         else if (disk->info.bootIndex)
             bootindex = disk->info.bootIndex;
 
-        if (withDeviceArg) {
+        if (withDeviceArg && STRNEQ(disk->dst, "replication")) {
             if (disk->bus == VIR_DOMAIN_DISK_BUS_FDC) {
                 if (virAsprintf(&optstr, "drive%c=drive-%s",
                                 disk->info.addr.drive.unit ? 'B' : 'A',
