@@ -1256,6 +1256,12 @@
         <ref name="diskSource"/>
         <ref name="diskBackingChain"/>
         <ref name="diskFormat"/>
+        <element name="reference">
+          <attribute name="name">
+            <ref name="aliasName"/>
+          </attribute>
+          <empty/>
+        </element>
       </interleave>
     </element>
   </define>

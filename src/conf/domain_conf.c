@@ -6489,6 +6489,8 @@ virDomainDiskBackingStoreParse(xmlXPathContextPtr ctxt,
         virDomainDiskBackingStoreParse(ctxt, backingStore) < 0)
         goto cleanup;
 
+    backingStore->reference = virXPathString("string(./reference/@name)", ctxt);
+
     src->backingStore = backingStore;
     ret = 0;
 

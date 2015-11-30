@@ -295,6 +295,7 @@ struct _virStorageSource {
      * current file.  */
     char *backingStoreRaw;
     int mode; /* virStorageMode */
+    char *reference;
 };
 
 
