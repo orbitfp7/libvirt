@@ -3519,6 +3519,7 @@ qemuBuildDriveStr(virConnectPtr conn,
     int busid = -1, unitid = -1;
     char *source = NULL;
     int actualType = virStorageSourceGetActualType(disk->src);
+    bool blockReplication = disk->src->format == VIR_STORAGE_FILE_REPLICATION;
 
     if (idx < 0) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -3603,43 +3604,16 @@ qemuBuildDriveStr(virConnectPtr conn,
     if (qemuGetDriveSourceString(disk->src, conn, &source) < 0)
         goto error;
 
-    if (disk->src->format == VIR_STORAGE_FILE_REPLICATION) {
-        virStorageSourcePtr activeDisk = disk->src->backingStore;
-        if (!activeDisk) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("block replication missing active disk"));
-            goto error;
-        }
-        virStorageSourcePtr hiddenDisk = activeDisk->backingStore;
-        if (!hiddenDisk) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("block replication missing hidden disk"));
-            goto error;
-        }
 
-        virBufferAddLit(&opt, "file.file.filename=");
-        if (qemuGetDriveSourceString(activeDisk, conn, &source) < 0)
-            goto error;
-        virBufferEscape(&opt, ',', ",", "%s,", source);
-        virBufferAsprintf(&opt, "file.driver=%s",
-                          virStorageFileFormatTypeToString(activeDisk->format));
-
-
-        virBufferAddLit(&opt, ",file.backing.file.filename=");
-        if (qemuGetDriveSourceString(hiddenDisk, conn, &source) < 0)
-            goto error;
-        virBufferEscape(&opt, ',', ",", "%s,", source);
-        virBufferAsprintf(&opt, "file.backing.driver=%s",
-                          virStorageFileFormatTypeToString(hiddenDisk->format));
-        virBufferAsprintf(&opt, ",file.backing.backing.backing_reference=%s%s",
-                          QEMU_DRIVE_HOST_PREFIX, disk->info.alias);
-        virBufferAddLit(&opt, ",file.backing.allow-write-backing-file=on,");
-    } else if (source &&
+    if (source &&
         !((disk->device == VIR_DOMAIN_DISK_DEVICE_FLOPPY ||
            disk->device == VIR_DOMAIN_DISK_DEVICE_CDROM) &&
           disk->tray_status == VIR_DOMAIN_DISK_TRAY_OPEN)) {
 
-        virBufferAddLit(&opt, "file=");
+        if (blockReplication)
+            virBufferAddLit(&opt, "file.file.filename=");
+        else
+            virBufferAddLit(&opt, "file=");
 
         switch (actualType) {
         case VIR_STORAGE_TYPE_DIR:
@@ -3747,8 +3721,7 @@ qemuBuildDriveStr(virConnectPtr conn,
         goto error;
     }
 
-    if (disk->src->mode > 0 &&
-        disk->src->format == VIR_STORAGE_FILE_REPLICATION) {
+    if (disk->src->mode > 0) {
         virBufferAsprintf(&opt, ",mode=%s",
                           virStorageModeTypeToString(disk->src->mode));
     }
@@ -3986,6 +3959,41 @@ qemuBuildDriveStr(virConnectPtr conn,
     if (disk->blkdeviotune.size_iops_sec) {
         virBufferAsprintf(&opt, ",iops_size=%llu",
                           disk->blkdeviotune.size_iops_sec);
+    }
+
+    if (blockReplication) {
+        /* TODO(ORBIT): Find a way to set the format of a disk using the block
+                        replication driver. */
+        /*if (!cfg->allowDiskFormatProbing) {
+            disk->src->format = virStorageFileProbeFormat(disk->src->path,
+                                                          cfg->user,
+                                                          cfg->group);
+        } else {*/
+            /* Right now, going to assume qcow2 if we're not allowed to
+               probe format since that is the intended format. */
+            disk->src->format = VIR_STORAGE_FILE_QCOW2;
+            VIR_WARN("Block replication active disk format assumed to "
+                     "be qcow2. To use a different format allow disk "
+                     "format probing.");
+        // }
+        virBufferAsprintf(&opt, ",file.driver=%s",
+                          virStorageFileFormatTypeToString(disk->src->format));
+
+        virStorageSourcePtr hiddenDisk = disk->src->backingStore;
+        if (!hiddenDisk) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("block replication missing hidden disk"));
+            goto error;
+        }
+        virBufferAddLit(&opt, ",file.backing.file.filename=");
+        if (qemuGetDriveSourceString(hiddenDisk, conn, &source) < 0)
+            goto error;
+        virBufferEscape(&opt, ',', ",", "%s,", source);
+        virBufferAsprintf(&opt, "file.backing.driver=%s",
+                          virStorageFileFormatTypeToString(hiddenDisk->format));
+        virBufferAsprintf(&opt, ",file.backing.backing.backing_reference=%s%s",
+                          QEMU_DRIVE_HOST_PREFIX, hiddenDisk->reference);
+        virBufferAddLit(&opt, ",file.backing.allow-write-backing-file=on");
     }
 
     if (virBufferCheckError(&opt) < 0)
@@ -10032,8 +10040,6 @@ qemuBuildCommandLine(virConnectPtr conn,
         virDomainDiskDefPtr disk = def->disks[i];
         bool withDeviceArg = false;
         bool deviceFlagMasked = false;
-        const bool blockReplication =
-            disk->src->format == VIR_STORAGE_FILE_REPLICATION;
 
         /* Unless we have -device, then USB disks need special
            handling */
@@ -10092,21 +10098,7 @@ qemuBuildCommandLine(virConnectPtr conn,
             }
         }
 
-        if (blockReplication) {
-            withDeviceArg = false;
 
-            /* TODO: Find a way to set the format of a disk using the block
-                     replication driver. */
-            if (!cfg->allowDiskFormatProbing) {
-                virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                               "disk format probing is disabled but is "
-                               "required for block replication");
-                goto error;
-            }
-            disk->src->format = virStorageFileProbeFormat(disk->src->path,
-                                                               cfg->user,
-                                                               cfg->group);
-        }
         optstr = qemuBuildDriveStr(conn, disk,
                                    emitBootindex ? false : !!bootindex,
                                    qemuCaps);
@@ -10116,18 +10108,6 @@ qemuBuildCommandLine(virConnectPtr conn,
             goto error;
         virCommandAddArg(cmd, optstr);
         VIR_FREE(optstr);
-
-        if (blockReplication) {
-            virCommandAddArg(cmd, "-drive");
-            disk->src->format = VIR_STORAGE_FILE_REPLICATION; // See above TODO
-            virQEMUCapsClear(qemuCaps, QEMU_CAPS_DEVICE);
-            optstr = qemuBuildDriveStr(conn, disk, false, qemuCaps);
-            virQEMUCapsSet(qemuCaps, QEMU_CAPS_DEVICE);
-            if (!optstr)
-                goto error;
-            virCommandAddArg(cmd, optstr);
-            VIR_FREE(optstr);
-        }
 
         if (!emitBootindex)
             bootindex = 0;
