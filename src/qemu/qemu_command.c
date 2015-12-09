@@ -3663,7 +3663,9 @@ qemuBuildDriveStr(virConnectPtr conn,
     }
     VIR_FREE(source);
 
-    if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE))
+    if (blockReplication)
+	virBufferAddLit(&opt, "if=virtio");
+    else if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE))
         virBufferAddLit(&opt, "if=none");
     else
         virBufferAsprintf(&opt, "if=%s", bus);
@@ -10090,7 +10092,8 @@ qemuBuildCommandLine(virConnectPtr conn,
            care that we can't use -device */
         if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE)) {
             if (disk->bus != VIR_DOMAIN_DISK_BUS_XEN &&
-                disk->bus != VIR_DOMAIN_DISK_BUS_SD) {
+                disk->bus != VIR_DOMAIN_DISK_BUS_SD &&
+                disk->src->format != VIR_STORAGE_FILE_REPLICATION) {
                 withDeviceArg = true;
             } else {
                 virQEMUCapsClear(qemuCaps, QEMU_CAPS_DEVICE);
