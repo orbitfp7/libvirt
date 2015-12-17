@@ -2863,21 +2863,14 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
                                virDomainObjPtr vm,
                                qemuDomainAsyncJob asyncJob,
                                virConnectPtr dconn,
-                               bool abort_on_error,
-                               bool storage)
+                               unsigned int flags)
 {
     qemuDomainObjPrivatePtr priv = vm->privateData;
     qemuDomainJobInfoPtr jobInfo = priv->job.current;
     bool events = virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATION_EVENT);
-    unsigned int flags;
     int rv;
 
-    flags = QEMU_MIGRATION_COMPLETED_UPDATE_STATS |
-            QEMU_MIGRATION_COMPLETED_POSTCOPY;
-    if (abort_on_error)
-        flags |= QEMU_MIGRATION_COMPLETED_ABORT_ON_ERROR;
-    if (storage)
-        flags |= QEMU_MIGRATION_COMPLETED_CHECK_STORAGE;
+    flags |= QEMU_MIGRATION_COMPLETED_UPDATE_STATS;
 
     jobInfo->type = VIR_DOMAIN_JOB_UNBOUNDED;
     while ((rv = qemuMigrationCompleted(driver, vm, asyncJob,
@@ -4632,6 +4625,7 @@ qemuMigrationRun(virQEMUDriverPtr driver,
     bool abort_on_error = !!(flags & VIR_MIGRATE_ABORT_ON_ERROR);
     bool events = virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATION_EVENT);
     bool inPostCopy = false;
+    unsigned int waitFlags;
     int rc;
 
     VIR_DEBUG("driver=%p, vm=%p, cookiein=%s, cookieinlen=%d, "
@@ -4878,9 +4872,17 @@ qemuMigrationRun(virQEMUDriverPtr driver,
         fd = -1;
     }
 
+    waitFlags = 0;
+    if (abort_on_error)
+        waitFlags |= QEMU_MIGRATION_COMPLETED_ABORT_ON_ERROR;
+    if (mig->nbd)
+        waitFlags |= QEMU_MIGRATION_COMPLETED_CHECK_STORAGE;
+    if (flags & VIR_MIGRATE_POSTCOPY)
+        waitFlags |= QEMU_MIGRATION_COMPLETED_POSTCOPY;
+
     rc = qemuMigrationWaitForCompletion(driver, vm,
                                         QEMU_ASYNC_JOB_MIGRATION_OUT,
-                                        dconn, abort_on_error, !!mig->nbd);
+                                        dconn, waitFlags);
     if (rc == -2)
         goto cancel;
     else if (rc == -1)
@@ -6508,8 +6510,7 @@ qemuMigrationToFile(virQEMUDriverPtr driver, virDomainObjPtr vm,
     if (rc < 0)
         goto cleanup;
 
-    rc = qemuMigrationWaitForCompletion(driver, vm, asyncJob,
-                                        NULL, false, false);
+    rc = qemuMigrationWaitForCompletion(driver, vm, asyncJob, NULL, 0);
 
     if (rc < 0) {
         if (rc == -2) {
