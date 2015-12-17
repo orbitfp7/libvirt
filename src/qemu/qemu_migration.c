@@ -2781,6 +2781,7 @@ enum qemuMigrationCompletedFlags {
     QEMU_MIGRATION_COMPLETED_CHECK_STORAGE  = (1 << 1),
     QEMU_MIGRATION_COMPLETED_UPDATE_STATS   = (1 << 2),
     QEMU_MIGRATION_COMPLETED_POSTCOPY       = (1 << 3),
+    QEMU_MIGRATION_COMPLETED_POSTCOPY_AUTO  = (1 << 4),
 };
 
 /**
@@ -2877,6 +2878,19 @@ qemuMigrationWaitForCompletion(virQEMUDriverPtr driver,
                                         dconn, flags)) != 1) {
         if (rv < 0)
             return rv;
+
+        if (flags & QEMU_MIGRATION_COMPLETED_POSTCOPY_AUTO &&
+            priv->job.postcopyEnabled &&
+            jobInfo->stats.ram_iteration > 1) {
+            flags ^= QEMU_MIGRATION_COMPLETED_POSTCOPY_AUTO;
+
+            VIR_DEBUG("One pre-copy iteration finished; switching to post-copy");
+            if (qemuDomainObjEnterMonitorAsync(driver, vm, asyncJob) < 0)
+                return -2;
+            rv = qemuMonitorMigrateStartPostCopy(priv->mon);
+            if (qemuDomainObjExitMonitor(driver, vm) < 0 || rv < 0)
+                return -2;
+        }
 
         if (events) {
             if (virDomainObjWait(vm) < 0) {
@@ -4879,6 +4893,8 @@ qemuMigrationRun(virQEMUDriverPtr driver,
         waitFlags |= QEMU_MIGRATION_COMPLETED_CHECK_STORAGE;
     if (flags & VIR_MIGRATE_POSTCOPY)
         waitFlags |= QEMU_MIGRATION_COMPLETED_POSTCOPY;
+    if (flags & VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY)
+        waitFlags |= QEMU_MIGRATION_COMPLETED_POSTCOPY_AUTO;
 
     rc = qemuMigrationWaitForCompletion(driver, vm,
                                         QEMU_ASYNC_JOB_MIGRATION_OUT,

@@ -1561,6 +1561,9 @@ qemuProcessHandleMigrationPass(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
         goto cleanup;
     }
 
+    priv->job.current->stats.ram_iteration = pass;
+    virDomainObjBroadcast(vm);
+
     qemuDomainEventQueue(driver,
                          virDomainEventMigrationIterationNewFromObj(vm, pass));
 
