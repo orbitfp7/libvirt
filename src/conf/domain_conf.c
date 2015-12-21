@@ -17712,27 +17712,29 @@ virDomainDefCheckABIStability(virDomainDefPtr src,
         goto error;
     }
 
-    if (memcmp(src->uuid, dst->uuid, VIR_UUID_BUFLEN) != 0) {
-        char uuidsrc[VIR_UUID_STRING_BUFLEN];
-        char uuiddst[VIR_UUID_STRING_BUFLEN];
-        virUUIDFormat(src->uuid, uuidsrc);
-        virUUIDFormat(dst->uuid, uuiddst);
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target domain uuid %s does not match source %s"),
-                       uuiddst, uuidsrc);
-        goto error;
-    }
+    // TODO
+    // if (memcmp(src->uuid, dst->uuid, VIR_UUID_BUFLEN) != 0) {
+    //     char uuidsrc[VIR_UUID_STRING_BUFLEN];
+    //     char uuiddst[VIR_UUID_STRING_BUFLEN];
+    //     virUUIDFormat(src->uuid, uuidsrc);
+    //     virUUIDFormat(dst->uuid, uuiddst);
+    //     virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+    //                    _("Target domain uuid %s does not match source %s"),
+    //                    uuiddst, uuidsrc);
+    //     goto error;
+    // }
 
     /* Not strictly ABI related, but we want to make sure domains
      * don't get silently re-named through the backdoor when passing
      * custom XML into various APIs, since this would create havoc
      */
-    if (STRNEQ_NULLABLE(src->name, dst->name)) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target domain name '%s' does not match source '%s'"),
-                       dst->name, src->name);
-        goto error;
-    }
+    // TODO
+    // if (STRNEQ_NULLABLE(src->name, dst->name)) {
+    //     virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+    //                    _("Target domain name '%s' does not match source '%s'"),
+    //                    dst->name, src->name);
+    //     goto error;
+    // }
 
     if (virDomainDefGetMemoryInitial(src) != virDomainDefGetMemoryInitial(dst)) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
@@ -17825,12 +17827,13 @@ virDomainDefCheckABIStability(virDomainDefPtr src,
     if (!virSysinfoIsEqual(src->sysinfo, dst->sysinfo))
         goto error;
 
-    if (src->ndisks != dst->ndisks) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target domain disk count %zu does not match source %zu"),
-                       dst->ndisks, src->ndisks);
-        goto error;
-    }
+    // TODO
+    // if (src->ndisks != dst->ndisks) {
+    //     virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+    //                    _("Target domain disk count %zu does not match source %zu"),
+    //                    dst->ndisks, src->ndisks);
+    //     goto error;
+    // }
 
     for (i = 0; i < src->ndisks; i++)
         if (!virDomainDiskDefCheckABIStability(src->disks[i], dst->disks[i]))

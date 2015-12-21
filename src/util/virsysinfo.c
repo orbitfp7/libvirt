@@ -1360,7 +1360,8 @@ virSysinfoSystemIsEqual(virSysinfoSystemDefPtr src,
     CHECK_FIELD(product, "system product");
     CHECK_FIELD(version, "system version");
     CHECK_FIELD(serial, "system serial");
-    CHECK_FIELD(uuid, "system uuid");
+    // TODO
+    //CHECK_FIELD(uuid, "system uuid");
     CHECK_FIELD(sku, "system sku");
     CHECK_FIELD(family, "system family");
 

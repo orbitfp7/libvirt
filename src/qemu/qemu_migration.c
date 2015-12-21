@@ -1167,12 +1167,13 @@ qemuMigrationCookieXMLParse(qemuMigrationCookiePtr mig,
                        "%s", _("missing name element in migration data"));
         goto error;
     }
-    if (STRNEQ(tmp, mig->name)) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Incoming cookie data had unexpected name %s vs %s"),
-                       tmp, mig->name);
-        goto error;
-    }
+    // TODO
+    // if (STRNEQ(tmp, mig->name)) {
+    //     virReportError(VIR_ERR_INTERNAL_ERROR,
+    //                    _("Incoming cookie data had unexpected name %s vs %s"),
+    //                    tmp, mig->name);
+    //     goto error;
+    // }
     VIR_FREE(tmp);
 
     /* Extract domain uuid */
@@ -1183,12 +1184,13 @@ qemuMigrationCookieXMLParse(qemuMigrationCookiePtr mig,
         goto error;
     }
     virUUIDFormat(mig->uuid, uuidstr);
-    if (STRNEQ(tmp, uuidstr)) {
-        virReportError(VIR_ERR_INTERNAL_ERROR,
-                       _("Incoming cookie data had unexpected UUID %s vs %s"),
-                       tmp, uuidstr);
-        goto error;
-    }
+    // TODO
+    // if (STRNEQ(tmp, uuidstr)) {
+    //     virReportError(VIR_ERR_INTERNAL_ERROR,
+    //                    _("Incoming cookie data had unexpected UUID %s vs %s"),
+    //                    tmp, uuidstr);
+    //     goto error;
+    // }
     VIR_FREE(tmp);
 
     /* Check & forbid "localhost" migration */
