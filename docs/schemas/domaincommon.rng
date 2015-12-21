@@ -1473,7 +1473,7 @@
 
   <define name="diskTarget">
     <data type="string">
-      <param name="pattern">(ioemu:)?(fd|hd|sd|vd|xvd|ubd)[a-zA-Z0-9_]+</param>
+      <param name="pattern">(ioemu:)?(fd|hd|sd|vd|xvd|ubd|replicatio)[a-zA-Z0-9_]+</param>
     </data>
   </define>
   <define name="target">
