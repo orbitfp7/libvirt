@@ -18878,6 +18878,9 @@ virDomainDiskDefFormat(virBufferPtr buf,
         if (def->src->format > 0)
             virBufferAsprintf(buf, " type='%s'",
                               virStorageFileFormatTypeToString(def->src->format));
+        if (def->src->mode > 0)
+            virBufferAsprintf(buf, " mode='%s'",
+                              virStorageModeTypeToString(def->src->mode));
         if (def->cachemode)
             virBufferAsprintf(buf, " cache='%s'", cachemode);
         if (def->error_policy)
