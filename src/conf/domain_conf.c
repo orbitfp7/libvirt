@@ -4251,8 +4251,10 @@ virDomainDeviceInfoFormat(virBufferPtr buf,
     if ((flags & VIR_DOMAIN_DEF_FORMAT_ALLOW_BOOT) && info->bootIndex)
         virBufferAsprintf(buf, "<boot order='%d'/>\n", info->bootIndex);
 
-    if (info->alias &&
-        !(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE)) {
+    if (info->alias
+        // &&
+        // !(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE)
+        ) {
         virBufferAsprintf(buf, "<alias name='%s'/>\n", info->alias);
     }
 
@@ -18913,7 +18915,8 @@ virDomainDiskDefFormat(virBufferPtr buf,
 
     /* Don't format backingStore to inactive XMLs until the code for
      * persistent storage of backing chains is ready. */
-    if (!(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE) &&
+    if (
+        // !(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE) &&
         virDomainDiskBackingStoreFormat(buf, def->src->backingStore,
                                         def->src->backingStoreRaw, 1) < 0)
         return -1;
