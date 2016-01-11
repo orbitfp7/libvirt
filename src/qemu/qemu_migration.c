@@ -2410,6 +2410,52 @@ qemuMigrationSetOption(virQEMUDriverPtr driver,
     return ret;
 }
 
+// TODO Might need to check COLO capability on target as well?
+static int
+qemuMigrationSetCOLO(virQEMUDriverPtr driver,
+                       virDomainObjPtr vm,
+                       bool state,
+                       qemuDomainAsyncJob job)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    int ret;
+
+    if (job != QEMU_ASYNC_JOB_MIGRATION_OUT) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+            _("COLO migration only make sense for outgoing migration"));
+    }
+
+    if (qemuDomainObjEnterMonitorAsync(driver, vm, job) < 0)
+        return -1;
+
+    ret = qemuMonitorGetMigrationCapability(
+                priv->mon,
+                QEMU_MONITOR_MIGRATION_CAPS_COLO);
+
+    if (ret < 0) {
+        goto cleanup;
+    } else if (ret == 0 && !state) {
+        /* Unsupported but we want it off anyway */
+        goto cleanup;
+    } else if (ret == 0) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED, "%s",
+                       _("COLO migration is not supported by source QEMU "
+                         "binary"));
+        ret = -1;
+        goto cleanup;
+    }
+
+    ret = qemuMonitorSetMigrationCapability(
+                priv->mon,
+                QEMU_MONITOR_MIGRATION_CAPS_COLO,
+                state);
+
+ cleanup:
+    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+        ret = -1;
+    return ret;
+}
+
 static int
 qemuMigrationWaitForSpice(virDomainObjPtr vm)
 {
@@ -4380,6 +4426,11 @@ qemuMigrationRun(virQEMUDriverPtr driver,
                                QEMU_MONITOR_MIGRATION_CAPS_RDMA_PIN_ALL,
                                flags & VIR_MIGRATE_RDMA_PIN_ALL,
                                QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+        goto cleanup;
+
+    if (qemuMigrationSetCOLO(driver, vm,
+                             flags & VIR_MIGRATE_COLO,
+                             QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
         goto cleanup;
 
     if (qemuDomainObjEnterMonitorAsync(driver, vm,
