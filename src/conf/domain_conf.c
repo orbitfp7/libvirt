@@ -16854,60 +16854,60 @@ virDomainDeviceInfoCheckABIStability(virDomainDeviceInfoPtr src,
 }
 
 
-static bool
-virDomainDiskDefCheckABIStability(virDomainDiskDefPtr src,
-                                  virDomainDiskDefPtr dst)
-{
-    if (src->device != dst->device) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target disk device %s does not match source %s"),
-                       virDomainDiskDeviceTypeToString(dst->device),
-                       virDomainDiskDeviceTypeToString(src->device));
-        return false;
-    }
+// static bool
+// virDomainDiskDefCheckABIStability(virDomainDiskDefPtr src,
+//                                   virDomainDiskDefPtr dst)
+// {
+//     if (src->device != dst->device) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target disk device %s does not match source %s"),
+//                        virDomainDiskDeviceTypeToString(dst->device),
+//                        virDomainDiskDeviceTypeToString(src->device));
+//         return false;
+//     }
 
-    if (src->bus != dst->bus) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target disk bus %s does not match source %s"),
-                       virDomainDiskBusTypeToString(dst->bus),
-                       virDomainDiskBusTypeToString(src->bus));
-        return false;
-    }
+//     if (src->bus != dst->bus) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target disk bus %s does not match source %s"),
+//                        virDomainDiskBusTypeToString(dst->bus),
+//                        virDomainDiskBusTypeToString(src->bus));
+//         return false;
+//     }
 
-    if (STRNEQ(src->dst, dst->dst)) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target disk %s does not match source %s"),
-                       dst->dst, src->dst);
-        return false;
-    }
+//     if (STRNEQ(src->dst, dst->dst)) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target disk %s does not match source %s"),
+//                        dst->dst, src->dst);
+//         return false;
+//     }
 
-    if (STRNEQ_NULLABLE(src->serial, dst->serial)) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target disk serial %s does not match source %s"),
-                       NULLSTR(dst->serial), NULLSTR(src->serial));
-        return false;
-    }
+//     if (STRNEQ_NULLABLE(src->serial, dst->serial)) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target disk serial %s does not match source %s"),
+//                        NULLSTR(dst->serial), NULLSTR(src->serial));
+//         return false;
+//     }
 
-    if (STRNEQ_NULLABLE(src->wwn, dst->wwn)) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target disk wwn '%s' does not match source '%s'"),
-                       NULLSTR(dst->wwn), NULLSTR(src->wwn));
-        return false;
+//     if (STRNEQ_NULLABLE(src->wwn, dst->wwn)) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target disk wwn '%s' does not match source '%s'"),
+//                        NULLSTR(dst->wwn), NULLSTR(src->wwn));
+//         return false;
 
-    }
+//     }
 
-    if (src->src->readonly != dst->src->readonly ||
-        src->src->shared != dst->src->shared) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("Target disk access mode does not match source"));
-        return false;
-    }
+//     if (src->src->readonly != dst->src->readonly ||
+//         src->src->shared != dst->src->shared) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+//                        _("Target disk access mode does not match source"));
+//         return false;
+//     }
 
-    if (!virDomainDeviceInfoCheckABIStability(&src->info, &dst->info))
-        return false;
+//     if (!virDomainDeviceInfoCheckABIStability(&src->info, &dst->info))
+//         return false;
 
-    return true;
-}
+//     return true;
+// }
 
 
 static bool
@@ -17837,9 +17837,10 @@ virDomainDefCheckABIStability(virDomainDefPtr src,
     //     goto error;
     // }
 
-    for (i = 0; i < src->ndisks; i++)
-        if (!virDomainDiskDefCheckABIStability(src->disks[i], dst->disks[i]))
-            goto error;
+    // TODO Can probably be fixed with disk ordering, but then alias referencing wont work
+    // for (i = 0; i < src->ndisks; i++)
+        // if (!virDomainDiskDefCheckABIStability(src->disks[i], dst->disks[i]))
+            // goto error;
 
     if (src->ncontrollers != dst->ncontrollers) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
