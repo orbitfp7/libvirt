@@ -3024,37 +3024,40 @@ qemuMigrationBeginPhase(virQEMUDriverPtr driver,
         bool has_drive_mirror =  virQEMUCapsGet(priv->qemuCaps,
                                                 QEMU_CAPS_DRIVE_MIRROR);
 
-        if (nmigrate_disks) {
-            if (has_drive_mirror) {
-                size_t i, j;
+        // TODO Currently adding migration_disks = replication which doesnt exist in source
+        // if (nmigrate_disks) {
+        //     if (has_drive_mirror) {
+        //         size_t i, j;
+        //         printf("ORBIT\n");
+        //         /* Check user requested only known disk targets. */
+        //         for (i = 0; i < nmigrate_disks; i++) {
+        //             printf("%s\n", migrate_disks[i]);
+        //             for (j = 0; j < vm->def->ndisks; j++) {
+        //                 printf("%s == %s\n", vm->def->disks[j]->dst, migrate_disks[i]);
+        //                 if (STREQ(vm->def->disks[j]->dst, migrate_disks[i]))
+        //                     break;
+        //             }
 
-                /* Check user requested only known disk targets. */
-                for (i = 0; i < nmigrate_disks; i++) {
-                    for (j = 0; j < vm->def->ndisks; j++) {
-                        if (STREQ(vm->def->disks[j]->dst, migrate_disks[i]))
-                            break;
-                    }
+        //             if (j == vm->def->ndisks) {
+        //                 virReportError(VIR_ERR_INVALID_ARG,
+        //                                _("disk target %s not found"),
+        //                                migrate_disks[i]);
+        //                 goto cleanup;
+        //             }
+        //         }
 
-                    if (j == vm->def->ndisks) {
-                        virReportError(VIR_ERR_INVALID_ARG,
-                                       _("disk target %s not found"),
-                                       migrate_disks[i]);
-                        goto cleanup;
-                    }
-                }
-
-                if (flags & VIR_MIGRATE_TUNNELLED) {
-                    virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
-                                   _("Selecting disks to migrate is not "
-                                     "implemented for tunnelled migration"));
-                    goto cleanup;
-                }
-            } else {
-                virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
-                               _("qemu does not support drive-mirror command"));
-                goto cleanup;
-            }
-        }
+        //         if (flags & VIR_MIGRATE_TUNNELLED) {
+        //             virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+        //                            _("Selecting disks to migrate is not "
+        //                              "implemented for tunnelled migration"));
+        //             goto cleanup;
+        //         }
+        //     } else {
+        //         virReportError(VIR_ERR_OPERATION_UNSUPPORTED, "%s",
+        //                        _("qemu does not support drive-mirror command"));
+        //         goto cleanup;
+        //     }
+        // }
 
         if (has_drive_mirror) {
             /* TODO support NBD for TUNNELLED migration */
