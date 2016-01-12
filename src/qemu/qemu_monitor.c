@@ -163,7 +163,8 @@ VIR_ENUM_IMPL(qemuMonitorMigrationStatus,
               "inactive", "setup",
               "active",
               "completed", "failed",
-              "cancelling", "cancelled")
+              "cancelling", "cancelled",
+              "colo")
 
 VIR_ENUM_IMPL(qemuMonitorMigrationCaps,
               QEMU_MONITOR_MIGRATION_CAPS_LAST,
