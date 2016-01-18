@@ -3663,9 +3663,7 @@ qemuBuildDriveStr(virConnectPtr conn,
     }
     VIR_FREE(source);
 
-    if (blockReplication)
-	virBufferAddLit(&opt, "if=virtio");
-    else if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE))
+    if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE))
         virBufferAddLit(&opt, "if=none");
     else
         virBufferAsprintf(&opt, "if=%s", bus);
@@ -3980,6 +3978,8 @@ qemuBuildDriveStr(virConnectPtr conn,
         // }
         virBufferAsprintf(&opt, ",file.driver=%s",
                           virStorageFileFormatTypeToString(disk->src->format));
+
+        disk->src->format = VIR_STORAGE_FILE_REPLICATION;
 
         virStorageSourcePtr hiddenDisk = disk->src->backingStore;
         if (!hiddenDisk) {
@@ -10091,8 +10091,13 @@ qemuBuildCommandLine(virConnectPtr conn,
            static PCI addresses, so we don't really
            care that we can't use -device */
         if (virQEMUCapsGet(qemuCaps, QEMU_CAPS_DEVICE)) {
-            if (disk->bus != VIR_DOMAIN_DISK_BUS_XEN &&
+            if (STREQ(disk->dst, "replication")) {
+                /* We neither want the device flag nor the device flag being
+                   masked when adding a drive that is going to be replicated. */
+            } else if (disk->bus != VIR_DOMAIN_DISK_BUS_XEN &&
                 disk->bus != VIR_DOMAIN_DISK_BUS_SD &&
+                /* TODO(ORBIT): To suppress device flag for the
+                                replication drives. Fixes addr mismatch. */
                 disk->src->format != VIR_STORAGE_FILE_REPLICATION) {
                 withDeviceArg = true;
             } else {
@@ -10117,7 +10122,7 @@ qemuBuildCommandLine(virConnectPtr conn,
         else if (disk->info.bootIndex)
             bootindex = disk->info.bootIndex;
 
-        if (withDeviceArg && STRNEQ(disk->dst, "replication")) {
+        if (withDeviceArg) {
             if (disk->bus == VIR_DOMAIN_DISK_BUS_FDC) {
                 if (virAsprintf(&optstr, "drive%c=drive-%s",
                                 disk->info.addr.drive.unit ? 'B' : 'A',
