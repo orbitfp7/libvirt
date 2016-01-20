@@ -4386,6 +4386,36 @@ qemuMigrationRun(virQEMUDriverPtr driver,
     if (migrate_flags & (QEMU_MONITOR_MIGRATE_NON_SHARED_DISK |
                          QEMU_MONITOR_MIGRATE_NON_SHARED_INC)) {
         if (mig->nbd) {
+            /* TODO: Temporary solution until quorum is supported in libvirt. */
+            if (flags & VIR_MIGRATE_COLO) {
+                char *childAddCmd;
+                char *childAddResult;
+
+                if (qemuDomainObjEnterMonitorAsync(driver, vm,
+                        QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+                    goto cleanup;
+                if (virAsprintf(&childAddCmd,
+                                "child_add %s child.driver=replication,"
+                                "child.mode=primary,"
+                                "child.file.host=%s,"
+                                "child.file.port=%d,"
+                                "child.file.export=%s,"
+                                "child.file.driver=nbd,"
+                                "child.ignore-errors=on",
+                                "colo1", spec->dest.host.name,
+                                mig->nbd->port, "drive-colo1") < 0)
+                    goto cleanup;
+                printf("CHILD_ADD CMD: %s\n", childAddCmd);
+                if (qemuMonitorArbitraryCommand(priv->mon, childAddCmd,
+                                                &childAddResult, true) < 0)
+                    goto cleanup;
+                printf("CHILD_ADD RESULT: %s\n", childAddResult);
+                VIR_FREE(childAddCmd);
+                VIR_FREE(childAddResult);
+                if (qemuDomainObjExitMonitor(driver, vm) < 0)
+                    goto cleanup;
+            }
+
             /* This will update migrate_flags on success */
             if (qemuMigrationDriveMirror(driver, vm, mig,
                                          spec->dest.host.name,
