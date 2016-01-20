@@ -16983,34 +16983,34 @@ virDomainFsDefCheckABIStability(virDomainFSDefPtr src,
 }
 
 
-static bool
-virDomainNetDefCheckABIStability(virDomainNetDefPtr src,
-                                 virDomainNetDefPtr dst)
-{
-    char srcmac[VIR_MAC_STRING_BUFLEN];
-    char dstmac[VIR_MAC_STRING_BUFLEN];
+// static bool
+// virDomainNetDefCheckABIStability(virDomainNetDefPtr src,
+//                                  virDomainNetDefPtr dst)
+// {
+//     char srcmac[VIR_MAC_STRING_BUFLEN];
+//     char dstmac[VIR_MAC_STRING_BUFLEN];
 
-    if (virMacAddrCmp(&src->mac, &dst->mac) != 0) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target network card mac %s"
-                         " does not match source %s"),
-                       virMacAddrFormat(&dst->mac, dstmac),
-                       virMacAddrFormat(&src->mac, srcmac));
-        return false;
-    }
+//     if (virMacAddrCmp(&src->mac, &dst->mac) != 0) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target network card mac %s"
+//                          " does not match source %s"),
+//                        virMacAddrFormat(&dst->mac, dstmac),
+//                        virMacAddrFormat(&src->mac, srcmac));
+//         return false;
+//     }
 
-    if (STRNEQ_NULLABLE(src->model, dst->model)) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
-                       _("Target network card model %s does not match source %s"),
-                       NULLSTR(dst->model), NULLSTR(src->model));
-        return false;
-    }
+//     if (STRNEQ_NULLABLE(src->model, dst->model)) {
+//         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+//                        _("Target network card model %s does not match source %s"),
+//                        NULLSTR(dst->model), NULLSTR(src->model));
+//         return false;
+//     }
 
-    if (!virDomainDeviceInfoCheckABIStability(&src->info, &dst->info))
-        return false;
+//     if (!virDomainDeviceInfoCheckABIStability(&src->info, &dst->info))
+//         return false;
 
-    return true;
-}
+//     return true;
+// }
 
 
 static bool
@@ -17875,9 +17875,9 @@ virDomainDefCheckABIStability(virDomainDefPtr src,
         goto error;
     }
 
-    for (i = 0; i < src->nnets; i++)
-        if (!virDomainNetDefCheckABIStability(src->nets[i], dst->nets[i]))
-            goto error;
+    // for (i = 0; i < src->nnets; i++)
+    //     if (!virDomainNetDefCheckABIStability(src->nets[i], dst->nets[i]))
+    //         goto error;
 
     if (src->ninputs != dst->ninputs) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
