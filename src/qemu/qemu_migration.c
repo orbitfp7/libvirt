@@ -2490,6 +2490,7 @@ qemuMigrationUpdateJobType(qemuDomainJobInfoPtr jobInfo)
 {
     switch ((qemuMonitorMigrationStatus) jobInfo->stats.status) {
     case QEMU_MONITOR_MIGRATION_STATUS_COMPLETED:
+    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
         jobInfo->type = VIR_DOMAIN_JOB_COMPLETED;
         break;
 
@@ -2508,7 +2509,6 @@ qemuMigrationUpdateJobType(qemuDomainJobInfoPtr jobInfo)
     case QEMU_MONITOR_MIGRATION_STATUS_SETUP:
     case QEMU_MONITOR_MIGRATION_STATUS_ACTIVE:
     case QEMU_MONITOR_MIGRATION_STATUS_CANCELLING:
-    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
     case QEMU_MONITOR_MIGRATION_STATUS_LAST:
         break;
     }
