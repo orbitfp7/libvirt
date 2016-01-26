@@ -5864,8 +5864,10 @@ qemuMigrationFinish(virQEMUDriverPtr driver,
     if (mig->network && qemuDomainMigrateOPDRelocate(driver, vm, mig) < 0)
         VIR_WARN("unable to provide network data for relocation");
 
-    if (qemuMigrationStopNBDServer(driver, vm, mig) < 0)
-        goto endjob;
+    if (!(flags & VIR_MIGRATE_COLO)) {
+        if (qemuMigrationStopNBDServer(driver, vm, mig) < 0)
+            goto endjob;
+    }
 
     if (qemuRefreshVirtioChannelState(driver, vm) < 0)
         goto endjob;
