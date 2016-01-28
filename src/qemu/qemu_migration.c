@@ -3953,13 +3953,20 @@ qemuMigrationConfirmPhase(virQEMUDriverPtr driver,
          * up domain shutdown until SPICE server transfers its data */
         qemuMigrationWaitForSpice(vm);
 
-        qemuProcessStop(driver, vm, VIR_DOMAIN_SHUTOFF_MIGRATED,
-                        VIR_QEMU_PROCESS_STOP_MIGRATED);
+        /* COLO migrations keep the source running */
+        if (!(flags & VIR_MIGRATE_COLO)) {
+            qemuProcessStop(driver, vm, VIR_DOMAIN_SHUTOFF_MIGRATED,
+                            VIR_QEMU_PROCESS_STOP_MIGRATED);
+        }
+
+        /* TODO: Should audit be stopped or not for COLO? */
         virDomainAuditStop(vm, "migrated");
 
-        event = virDomainEventLifecycleNewFromObj(vm,
+        if (!(flags & VIR_MIGRATE_COLO)) {
+            event = virDomainEventLifecycleNewFromObj(vm,
                                          VIR_DOMAIN_EVENT_STOPPED,
                                          VIR_DOMAIN_EVENT_STOPPED_MIGRATED);
+        }
     } else {
         virErrorPtr orig_err = virSaveLastError();
 
