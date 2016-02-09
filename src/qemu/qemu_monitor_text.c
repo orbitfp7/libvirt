@@ -1357,12 +1357,19 @@ int qemuMonitorTextSetMigrationDowntime(qemuMonitorPtr mon,
 #define CHECKPOINT_LENGTH_PREFIX "colo checkpoint (ms): Latest:"
 #define CHECKPOINT_PAUSE_PREFIX "colo paused time (ms): Latest:"
 
+#define CHECKPOINT_SIZE_PREFIX "checkpoint size min/max/avg (MiB):"
+#define CHECKPOINT_LENGTH_PREFIX "checkpoint length min/max/avg (ms):"
+#define CHECKPOINT_PAUSE_PREFIX "checkpoint paused min/max/avg (ms):"
+
 int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                                      qemuMonitorMigrationStatsPtr stats)
 {
     char *reply;
     char *tmp;
     char *end;
+    char ** checkpoint_length = NULL;
+    char ** checkpoint_pause = NULL;
+    char ** checkpoint_size = NULL;
     int ret = -1;
 
     memset(stats, 0, sizeof(*stats));
@@ -1472,37 +1479,71 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
             }
             stats->disk_total *= 1024;
 
+
+            /*
+             * Check for COLO migration stats
+             */
             tmp = end;
 
             if (!(tmp = strstr(tmp, CHECKPOINT_LENGTH_PREFIX)))
                 goto done;
             tmp += strlen(CHECKPOINT_LENGTH_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_length) < 0) {
+            // checkpoint length info has the format: min/max/avg
+            if (!(checkpoint_length = virStringSplit(tmp,"/",3))) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint length time "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
+
+            if (virStrToLong_ull(checkpoint_length[3], &end, 10, 
+                                 &status->chkpt_length) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint length time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
             tmp = end;
 
             if (!(tmp = strstr(tmp, CHECKPOINT_PAUSE_PREFIX)))
                 goto done;
             tmp += strlen(CHECKPOINT_PAUSE_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_pause) < 0) {
+            // checkpoint pause info has the format: min/max/avg
+            if (!(checkpoint_pause = virStringSplit(tmp,"/",3))) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint pause time "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
+
+            if (virStrToLong_ull(checkpoint_pause[3], &end, 10, 
+                                 &status->chkpt_pause) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint pause time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
             tmp = end;
 
             if (!(tmp = strstr(tmp, CHECKPOINT_SIZE_PREFIX)))
                 goto done;
             tmp += strlen(CHECKPOINT_SIZE_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_size) < 0) {
+            // checkpoint size info has the format: min/max/avg
+            if (!(checkpoint_size= virStringSplit(tmp,"/",3))) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint size "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+
+            if (virStrToLong_ull(checkpoint_size[3], &end, 10,
+                                 &status->chkpt_size) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint size "
                                  "statistic %s"), tmp);
@@ -1516,6 +1557,10 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
 
  cleanup:
     VIR_FREE(reply);
+    virStringFreeList(checkpoint_length);
+    virStringFreeList(checkpoint_pause);
+    virStringFreeList(checkpoint_size);
+
     if (ret < 0)
         memset(stats, 0, sizeof(*stats));
     return ret;
