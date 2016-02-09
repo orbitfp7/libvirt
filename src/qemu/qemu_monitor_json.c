@@ -2629,18 +2629,27 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
             }
         }
 
-        virJSONValuePtr chkpt = virJSONValueObjectGet(ret, "checkpoint");
+        virJSONValuePtr chkpt = virJSONValueObjectGet(ret, 
+                                            "colo-checkpoint-stats");
         if (chkpt) {
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "size",
-                                                  &status->chkpt_size);
-            if (rc < 0) {
+            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
+
+            if (!(values /*&& virJSONValueIsArray(values)*/)) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but "
-                                 "'size' data was missing"));
+                               _("COLO length is missing values array"));
                 return -1;
             }
 
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "length",
+            int n = virJSONValueArraySize(values) - 1;
+            if (n < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO length array is emptry"));
+                return -1;
+            }
+
+            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
+
+            rc = virJSONValueObjectGetNumberUlong(latest, "value",
                                                   &status->chkpt_length);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -2648,8 +2657,56 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                                  "data was missing"));
                 return -1;
             }
+        }
 
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "pause",
+        chkpt = virJSONValueObjectGet(ret, "colo-size-stats");
+        if (chkpt) {
+            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
+
+            if (!(values /*&& virJSONValueIsArray(values)*/)) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO size is missing values array"));
+                return -1;
+            }
+
+            int n = virJSONValueArraySize(values) - 1;
+            if (n < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO size array is emptry"));
+                return -1;
+            }
+
+            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
+
+            rc = virJSONValueObjectGetNumberUlong(latest, "value",
+                                                  &status->chkpt_size);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'size' "
+                                 "data was missing"));
+                return -1;
+            }
+        }
+        
+        chkpt = virJSONValueObjectGet(ret, "colo-paused-stats");
+        if (chkpt) {
+            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
+
+            if (!(values /*&& virJSONValueIsArray(values)*/)) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO pause is missing values array"));
+                return -1;
+            }
+
+            int n = virJSONValueArraySize(values) - 1;
+            if (n < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO pause array is emptry"));
+                return -1;
+            }
+
+            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
+            rc = virJSONValueObjectGetNumberUlong(latest, "value",
                                                   &status->chkpt_pause);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
