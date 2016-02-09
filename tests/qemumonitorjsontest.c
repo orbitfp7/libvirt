@@ -1649,6 +1649,8 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
     expectedStatus.chkpt_size = 5001;
     expectedStatus.chkpt_length = 74;
     expectedStatus.chkpt_pause = 49;
+    expectedStatus.chkpt_count = 225;
+    expectedStatus.chkpt_proxy_discompare = 15;
 
     if (qemuMonitorTestAddItem(test, "query-migrate",
                                "{"
@@ -1663,6 +1665,8 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
                                "        \"colo-size-stats\": {\"values\": [{\"tag\": 58, \"value\": 10072}, {\"tag\": 15, \"value\": 5001}]},"
                                "        \"colo-checkpoint-stats\": {\"values\": [{\"tag\": 58, \"value\": 10072}, {\"tag\": 15, \"value\": 74}]},"
                                "        \"colo-paused-stats\": {\"values\": [{\"tag\": 58, \"value\": 10072}, {\"tag\": 15, \"value\": 49}]}"
+                               "        \"colo-count-stats\": {\"values\": [{\"tag\": 58, \"value\": 10072}, {\"tag\": 15, \"value\": 225}]}"
+                               "        \"colo-proxy-discompare-stats\": {\"values\": [{\"tag\": 58, \"value\": 10072}, {\"tag\": 15, \"value\": 15}]}"
                                "    },"
                                "    \"id\": \"libvirt-13\""
                                "}") < 0)

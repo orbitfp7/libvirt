@@ -835,6 +835,13 @@ qemuMigrationCookieStatisticsXMLFormat(virBufferPtr buf,
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
                       status->chkpt_length);
+    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                      VIR_DOMAIN_JOB_CHECKPOINT_COUNT,
+                      status->chkpt_count);
+    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+                      VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE,
+                      status->chkpt_proxy_discompare);
+
 
     virBufferAdjustIndent(buf, -2);
     virBufferAddLit(buf, "</statistics>\n");
@@ -1191,6 +1198,10 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
                       ctxt, &status->chkpt_length);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PAUSE "[1])",
                       ctxt, &status->chkpt_pause);
+    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_COUNT "[1])",
+                      ctxt, &status->chkpt_count);
+    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE "[1])",
+                      ctxt, &status->chkpt_proxy_discompare);
 
  cleanup:
     ctxt->node = save_ctxt;

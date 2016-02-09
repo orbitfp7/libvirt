@@ -5785,7 +5785,13 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
                                     &info.chkptLength) < 0 ||
             virTypedParamsGetULLong(params, nparams,
                                     VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
-                                    &info.chkptPause) < 0)
+                                    &info.chkptPause) < 0 ||
+            virTypedParamsGetULLong(params, nparams,
+                                    VIR_DOMAIN_JOB_CHECKPOINT_COUNT,
+                                    &info.chkptCount) < 0 ||
+            virTypedParamsGetULLong(params, nparams,
+                                    VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE,
+                                    &info.chkptProxyDiscompare) < 0 )
             goto save_error;
     } else if (last_error->code == VIR_ERR_NO_SUPPORT) {
         if (flags) {
@@ -5976,11 +5982,15 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
         vshPrint(ctl, "%-17s %-13llu\n", _("Compression overflows:"), value);
     }
 
-    if (info.chkptSize || info.chkptLength || info.chkptPause) {
+    if (info.chkptSize || info.chkptLength || info.chkptPause || info.chkptCount || info.chkptProxyDiscompare) {
         val = vshPrettyCapacity(info.chkptSize, &unit);
         vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Size:"), val, unit);
         vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Length:"), info.chkptLength);
         vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Pause:"), info.chkptPause);
+        val = vshPrettyCapacity(info.chkptCount, &unit);
+        vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Count:"), val, unit);
+        val = vshPrettyCapacity(info.chkptProxyDiscompare, &unit);
+        vshPrint(ctl, "%-17s %-.3lf %s\n", _("Proxy Discompare Count:"), val, unit);
     }
 
     ret = true;

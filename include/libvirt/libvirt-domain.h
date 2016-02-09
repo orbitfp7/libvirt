@@ -2545,6 +2545,8 @@ struct _virDomainJobInfo {
     unsigned long long chkptSize;
     unsigned long long chkptLength;
     unsigned long long chkptPause;
+    unsigned long long chkptCount;
+    unsigned long long chkptProxyDiscompare;
 };
 
 /**
@@ -2852,6 +2854,21 @@ int virDomainAbortJob(virDomainPtr dom);
  * virDomainGetJobStats field:
  */
 # define VIR_DOMAIN_JOB_CHECKPOINT_PAUSE         "checkpoint_pause"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_COUNT:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_COUNT         "checkpoint_count"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE:
+ *
+ * virDomainGetJobStats field:
+ */
+ # define VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE  "checkpoint_proxy_discompare"
+ 
 
 /**
  * virConnectDomainEventGenericCallback:

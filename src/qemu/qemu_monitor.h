@@ -520,7 +520,8 @@ struct _qemuMonitorMigrationStats {
     unsigned long long chkpt_size;
     unsigned long long chkpt_length;
     unsigned long long chkpt_pause;
-    
+    unsigned long long chkpt_count;
+    unsigned long long chkpt_proxy_discompare;
 };
 
 int qemuMonitorGetMigrationStats(qemuMonitorPtr mon,

@@ -1734,6 +1734,8 @@ struct remote_domain_get_job_info_ret {
         uint64_t                   chkptSize;
         uint64_t                   chkptLength;
         uint64_t                   chkptPause;
+        uint64_t                   chkptCount;
+        uint64_t                   chkptProxyDiscompare;
 };
 struct remote_domain_get_job_stats_args {
         remote_nonnull_domain      dom;

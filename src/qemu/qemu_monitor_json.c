@@ -2715,6 +2715,62 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                 return -1;
             }
         }
+
+        chkpt = virJSONValueObjectGet(ret, "colo-count-stats");
+        if (chkpt) {
+            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
+
+            if (!(values /*&& virJSONValueIsArray(values)*/)) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO count is missing values array"));
+                return -1;
+            }
+
+            int n = virJSONValueArraySize(values) - 1;
+            if (n < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO count array is emptry"));
+                return -1;
+            }
+
+            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
+            rc = virJSONValueObjectGetNumberUlong(latest, "value",
+                                                  &status->chkpt_count);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'count' "
+                                 "data was missing"));
+                return -1;
+            }
+        }
+
+        chkpt = virJSONValueObjectGet(ret, "colo-proxy-discompare-stats");
+        if (chkpt) {
+            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
+
+            if (!(values /*&& virJSONValueIsArray(values)*/)) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO proxy-discompare is missing values array"));
+                return -1;
+            }
+
+            int n = virJSONValueArraySize(values) - 1;
+            if (n < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO proxy-discompare array is emptry"));
+                return -1;
+            }
+
+            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
+            rc = virJSONValueObjectGetNumberUlong(latest, "value",
+                                                  &status->chkpt_proxy_discompare);
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'proxy discompare' "
+                                 "data was missing"));
+                return -1;
+            }
+        }
         break;
     }
 

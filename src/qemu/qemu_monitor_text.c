@@ -1353,13 +1353,11 @@ int qemuMonitorTextSetMigrationDowntime(qemuMonitorPtr mon,
 #define MIGRATION_DISK_REMAINING_PREFIX "remaining disk: "
 #define MIGRATION_DISK_TOTAL_PREFIX "total disk: "
 
-#define CHECKPOINT_SIZE_PREFIX "colo checkpoint size: Latest:"
-#define CHECKPOINT_LENGTH_PREFIX "colo checkpoint (ms): Latest:"
-#define CHECKPOINT_PAUSE_PREFIX "colo paused time (ms): Latest:"
-
 #define CHECKPOINT_SIZE_PREFIX "checkpoint size min/max/avg (MiB):"
 #define CHECKPOINT_LENGTH_PREFIX "checkpoint length min/max/avg (ms):"
 #define CHECKPOINT_PAUSE_PREFIX "checkpoint paused min/max/avg (ms):"
+#define CHECKPOINT_COUNT_PREFIX "checkpoint count:"
+#define CHECKPOINT_PROXY_DISCOMPARE "proxy discompare count:"
 
 int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                                      qemuMonitorMigrationStatsPtr stats)
@@ -1549,6 +1547,31 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
+
+            tmp = end;
+            if (!(tmp = strstr(tmp, CHECKPOINT_COUNT_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_COUNT_PREFIX);
+
+            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_count) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint count "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            tmp = end;
+            if (!(tmp = strstr(tmp, CHECKPOINT_PROXY_DISCOMPARE))
+                goto done;
+            tmp += strlen(CHECKPOINT_PROXY_DISCOMPARE);
+
+            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_proxy_discompare) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse proxy discompare count "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
         }
     }
 

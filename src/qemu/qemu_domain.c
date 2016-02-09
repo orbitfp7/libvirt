@@ -291,6 +291,8 @@ qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
     info->chkptSize = jobInfo->status.chkpt_size;
     info->chkptLength = jobInfo->status.chkpt_length;
     info->chkptPause = jobInfo->status.chkpt_pause;
+    info->chkptCount = jobInfo->status.chkpt_count;
+    info->chkptProxyDiscompare = jobInfo->status.chkpt_proxy_discompare;
 
     return 0;
 }
@@ -377,7 +379,13 @@ qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
                                 status->chkpt_length) < 0 ||
         virTypedParamsAddULLong(&par, &npar, &maxpar,
                                 VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
-                                status->chkpt_pause) < 0)
+                                status->chkpt_pause) < 0 ||
+        virTypedParamsAddULLong(&par, &npar, &maxpar,
+                                VIR_DOMAIN_JOB_CHECKPOINT_COUNT,
+                                status->chkpt_count) < 0 ||
+        virTypedParamsAddULLong(&par, &npar, &maxpar,
+                                VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE,
+                                status->chkpt_proxy_discompare) < 0)
         goto error;
 
     if (stats->ram_bps &&
