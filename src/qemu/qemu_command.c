@@ -5434,15 +5434,6 @@ qemuBuildHostNetStr(virDomainNetDefPtr net,
         }
         type_sep = ',';
         is_tap = true;
-
-        if (net->colo.forward) {
-            virBufferAsprintf(&buf, "%cforward_nic=%s", type_sep,
-                              net->colo.forward);
-        }
-        if (net->colo.script) {
-            virBufferAsprintf(&buf, "%ccolo_script=%s", type_sep,
-                              net->colo.script);
-        }
         break;
 
     case VIR_DOMAIN_NET_TYPE_ETHERNET:
