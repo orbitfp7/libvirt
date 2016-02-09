@@ -5776,7 +5776,16 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
                                     &info.fileProcessed) < 0 ||
             virTypedParamsGetULLong(params, nparams,
                                     VIR_DOMAIN_JOB_DISK_REMAINING,
-                                    &info.fileRemaining) < 0)
+                                    &info.fileRemaining) < 0 ||
+            virTypedParamsGetULLong(params, nparams,
+                                    VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
+                                    &info.chkptSize) < 0 ||
+            virTypedParamsGetULLong(params, nparams,
+                                    VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
+                                    &info.chkptLength) < 0 ||
+            virTypedParamsGetULLong(params, nparams,
+                                    VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
+                                    &info.chkptPause) < 0)
             goto save_error;
     } else if (last_error->code == VIR_ERR_NO_SUPPORT) {
         if (flags) {
@@ -5965,6 +5974,13 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
         goto save_error;
     } else if (rc) {
         vshPrint(ctl, "%-17s %-13llu\n", _("Compression overflows:"), value);
+    }
+
+    if (info.chkptSize || info.chkptLength || info.chkptPause) {
+        val = vshPrettyCapacity(info.chkptSize, &unit);
+        vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Size:"), val, unit);
+        vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Length:"), info.chkptLength);
+        vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Pause:"), info.chkptPause);
     }
 
     ret = true;

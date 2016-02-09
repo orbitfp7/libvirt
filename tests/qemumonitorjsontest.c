@@ -1660,6 +1660,11 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
                                "            \"remaining\": 1605013504,"
                                "            \"transferred\": 3625548"
                                "        }"
+                               "        \"checkpoint\": {"
+                               "            \"size\": 5001,"
+                               "            \"length\": 74,"
+                               "            \"pause\": 49"
+                               "        }"
                                "    },"
                                "    \"id\": \"libvirt-13\""
                                "}") < 0)

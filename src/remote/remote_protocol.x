@@ -2269,6 +2269,10 @@ struct remote_domain_get_job_info_ret { /* insert@1 */
     unsigned hyper fileTotal;
     unsigned hyper fileProcessed;
     unsigned hyper fileRemaining;
+
+    unsigned hyper chkptSize;
+    unsigned hyper chkptLength;
+    unsigned hyper chkptPause;  
 };
 
 

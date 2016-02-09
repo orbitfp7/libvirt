@@ -2540,6 +2540,11 @@ struct _virDomainJobInfo {
     unsigned long long fileTotal;
     unsigned long long fileProcessed;
     unsigned long long fileRemaining;
+
+    /* COLO's checkpoint's information */
+    unsigned long long chkptSize;
+    unsigned long long chkptLength;
+    unsigned long long chkptPause;
 };
 
 /**
@@ -2827,6 +2832,26 @@ int virDomainAbortJob(virDomainPtr dom);
 # define VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW     "compression_overflow"
 
 
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_SIZE:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_SIZE          "checkpoint_size"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_LENGTH:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_LENGTH        "checkpoint_length"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_PAUSE:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_PAUSE         "checkpoint_pause"
 
 /**
  * virConnectDomainEventGenericCallback:
