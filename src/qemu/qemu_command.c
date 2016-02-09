@@ -3993,9 +3993,8 @@ qemuBuildDriveStr(virConnectPtr conn,
         virBufferEscape(&opt, ',', ",", "%s,", source);
         virBufferAsprintf(&opt, "file.backing.driver=%s",
                           virStorageFileFormatTypeToString(hiddenDisk->format));
-        virBufferAsprintf(&opt, ",file.backing.backing.backing_reference=%s%s",
+        virBufferAsprintf(&opt, ",file.backing.backing=%s%s",
                           QEMU_DRIVE_HOST_PREFIX, hiddenDisk->reference);
-        virBufferAddLit(&opt, ",file.backing.allow-write-backing-file=on");
     }
 
     if (virBufferCheckError(&opt) < 0)

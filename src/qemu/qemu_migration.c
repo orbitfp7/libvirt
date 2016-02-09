@@ -4401,24 +4401,39 @@ qemuMigrationRun(virQEMUDriverPtr driver,
                 if (qemuDomainObjEnterMonitorAsync(driver, vm,
                         QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
                     goto cleanup;
+
                 if (virAsprintf(&childAddCmd,
-                                "child_add %s child.driver=replication,"
-                                "child.mode=primary,"
-                                "child.file.host=%s,"
-                                "child.file.port=%d,"
-                                "child.file.export=%s,"
-                                "child.file.driver=nbd,"
-                                "child.ignore-errors=on",
+                                "drive_add %s driver=replication,"
+                                "mode=primary,"
+                                "file.driver=nbd,"
+                                "file.host=%s,"
+                                "file.port=%d,"
+                                "file.export=%s,"
+                                "node-name=%s,"
+                                "if=none",
                                 "colo1", spec->dest.host.name,
-                                mig->nbd->port, "drive-colo1") < 0)
+                                mig->nbd->port, "drive-colo1", "node0") < 0)
                     goto cleanup;
-                printf("CHILD_ADD CMD: %s\n", childAddCmd);
+
                 if (qemuMonitorArbitraryCommand(priv->mon, childAddCmd,
                                                 &childAddResult, true) < 0)
                     goto cleanup;
-                printf("CHILD_ADD RESULT: %s\n", childAddResult);
+
                 VIR_FREE(childAddCmd);
                 VIR_FREE(childAddResult);
+
+                if (virAsprintf(&childAddCmd,
+                                "x_block_change %s -a %s",
+                                "colo1", "node0") < 0)
+                    goto cleanup;
+
+                if (qemuMonitorArbitraryCommand(priv->mon, childAddCmd,
+                                                &childAddResult, true) < 0)
+                    goto cleanup;
+
+                VIR_FREE(childAddCmd);
+                VIR_FREE(childAddResult);
+
                 if (qemuDomainObjExitMonitor(driver, vm) < 0)
                     goto cleanup;
             }
