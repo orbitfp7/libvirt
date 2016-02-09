@@ -182,6 +182,7 @@ struct _qemuDomainObjPrivate {
     int nbdPort; /* Port used for migration with NBD */
     unsigned short migrationPort;
     int preMigrationState;
+    int coloPort;
 
     virChrdevsPtr devs;
 

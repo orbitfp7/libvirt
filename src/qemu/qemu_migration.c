@@ -87,6 +87,7 @@ enum qemuMigrationCookieFlags {
     QEMU_MIGRATION_COOKIE_FLAG_NBD,
     QEMU_MIGRATION_COOKIE_FLAG_STATS,
     QEMU_MIGRATION_COOKIE_FLAG_MEMORY_HOTPLUG,
+    QEMU_MIGRATION_COOKIE_FLAG_COLO,
 
     QEMU_MIGRATION_COOKIE_FLAG_LAST
 };
@@ -100,7 +101,8 @@ VIR_ENUM_IMPL(qemuMigrationCookieFlag,
               "network",
               "nbd",
               "statistics",
-              "memory-hotplug");
+              "memory-hotplug",
+              "colo");
 
 enum qemuMigrationCookieFeatures {
     QEMU_MIGRATION_COOKIE_GRAPHICS  = (1 << QEMU_MIGRATION_COOKIE_FLAG_GRAPHICS),
@@ -110,6 +112,7 @@ enum qemuMigrationCookieFeatures {
     QEMU_MIGRATION_COOKIE_NBD = (1 << QEMU_MIGRATION_COOKIE_FLAG_NBD),
     QEMU_MIGRATION_COOKIE_STATS = (1 << QEMU_MIGRATION_COOKIE_FLAG_STATS),
     QEMU_MIGRATION_COOKIE_MEMORY_HOTPLUG = (1 << QEMU_MIGRATION_COOKIE_FLAG_MEMORY_HOTPLUG),
+    QEMU_MIGRATION_COOKIE_COLO = (1 << QEMU_MIGRATION_COOKIE_FLAG_COLO),
 };
 
 typedef struct _qemuMigrationCookieGraphics qemuMigrationCookieGraphics;
@@ -155,6 +158,12 @@ struct _qemuMigrationCookieNBD {
     } *disks;
 };
 
+typedef struct _qemuMigrationCookieCOLO qemuMigrationCookieCOLO;
+typedef qemuMigrationCookieCOLO *qemuMigrationCookieCOLOPtr;
+struct _qemuMigrationCookieCOLO {
+    int port; /* COLO proxy listening port */
+};
+
 typedef struct _qemuMigrationCookie qemuMigrationCookie;
 typedef qemuMigrationCookie *qemuMigrationCookiePtr;
 struct _qemuMigrationCookie {
@@ -189,6 +198,9 @@ struct _qemuMigrationCookie {
 
     /* If (flags & QEMU_MIGRATION_COOKIE_STATS) */
     qemuDomainJobInfoPtr jobInfo;
+
+    /* If (flags & QEMU_MIGRATION_COOKIE_COLO) */
+    qemuMigrationCookieCOLOPtr colo;
 };
 
 static void qemuMigrationCookieGraphicsFree(qemuMigrationCookieGraphicsPtr grap)
@@ -230,6 +242,15 @@ static void qemuMigrationCookieNBDFree(qemuMigrationCookieNBDPtr nbd)
 }
 
 
+static void qemuMigrationCookieCOLOFree(qemuMigrationCookieCOLOPtr COLO)
+{
+    if (!COLO)
+        return;
+
+    VIR_FREE(COLO);
+}
+
+
 static void qemuMigrationCookieFree(qemuMigrationCookiePtr mig)
 {
     if (!mig)
@@ -238,6 +259,7 @@ static void qemuMigrationCookieFree(qemuMigrationCookiePtr mig)
     qemuMigrationCookieGraphicsFree(mig->graphics);
     qemuMigrationCookieNetworkFree(mig->network);
     qemuMigrationCookieNBDFree(mig->nbd);
+    qemuMigrationCookieCOLOFree(mig->colo);
 
     VIR_FREE(mig->localHostname);
     VIR_FREE(mig->remoteHostname);
@@ -639,6 +661,22 @@ qemuMigrationCookieAddStatistics(qemuMigrationCookiePtr mig,
 }
 
 
+static int
+qemuMigrationCookieAddCOLO(qemuMigrationCookiePtr mig,
+                          virDomainObjPtr vm)
+{
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+
+    if (VIR_ALLOC(mig->colo) < 0)
+        return -1;
+
+    mig->colo->port = priv->coloPort;
+    mig->flags |= QEMU_MIGRATION_COOKIE_COLO;
+
+    return 0;
+}
+
+
 static void qemuMigrationCookieGraphicsXMLFormat(virBufferPtr buf,
                                                  qemuMigrationCookieGraphicsPtr grap)
 {
@@ -869,6 +907,10 @@ qemuMigrationCookieXMLFormat(virQEMUDriverPtr driver,
 
     if (mig->flags & QEMU_MIGRATION_COOKIE_STATS && mig->jobInfo)
         qemuMigrationCookieStatisticsXMLFormat(buf, mig->jobInfo);
+
+    if ((mig->flags & QEMU_MIGRATION_COOKIE_COLO) && mig->colo) {
+        virBufferAsprintf(buf, "<colo>%d</colo>\n", mig->colo->port);
+    }
 
     virBufferAdjustIndent(buf, -2);
     virBufferAddLit(buf, "</qemu-migration>\n");
@@ -1139,6 +1181,32 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
 }
 
 
+static qemuMigrationCookieCOLOPtr
+qemuMigrationCookieCOLOXMLParse(xmlXPathContextPtr ctxt)
+{
+    qemuMigrationCookieCOLOPtr ret = NULL;
+    char *port = NULL;
+
+    if (VIR_ALLOC(ret) < 0)
+        goto error;
+    port = virXPathString("string(./colo[1])", ctxt);
+    if (port && virStrToLong_i(port, NULL, 10, &ret->port) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Malformed COLO proxy port '%s'"),
+                       port);
+        goto error;
+    }
+
+ cleanup:
+    VIR_FREE(port);
+    return ret;
+ error:
+    qemuMigrationCookieCOLOFree(ret);
+    ret = NULL;
+    goto cleanup;
+}
+
+
 static int
 qemuMigrationCookieXMLParse(qemuMigrationCookiePtr mig,
                             virQEMUDriverPtr driver,
@@ -1311,6 +1379,10 @@ qemuMigrationCookieXMLParse(qemuMigrationCookiePtr mig,
         (!(mig->jobInfo = qemuMigrationCookieStatisticsXMLParse(ctxt))))
         goto error;
 
+    if (flags & QEMU_MIGRATION_COOKIE_COLO &&
+        (!(mig->colo = qemuMigrationCookieCOLOXMLParse(ctxt))))
+        goto error;
+
     virObjectUnref(caps);
     return 0;
 
@@ -1387,6 +1459,10 @@ qemuMigrationBakeCookie(qemuMigrationCookiePtr mig,
 
     if (flags & QEMU_MIGRATION_COOKIE_MEMORY_HOTPLUG)
         mig->flagsMandatory |= QEMU_MIGRATION_COOKIE_MEMORY_HOTPLUG;
+
+    if ((flags & QEMU_MIGRATION_COOKIE_COLO) &&
+        qemuMigrationCookieAddCOLO(mig, dom) < 0)
+        return -1;
 
     if (!(*cookieout = qemuMigrationCookieXMLFormatStr(driver, mig)))
         return -1;
@@ -3349,6 +3425,79 @@ qemuMigrationPrepareIncoming(virDomainObjPtr vm,
 }
 
 static int
+qemuMigrationAddCOLOProxy(virQEMUDriverPtr driver,
+                          virDomainObjPtr vm,
+                          bool primary,
+                          const char *hostname,
+                          unsigned short port,
+                          qemuDomainAsyncJob job)
+{
+    size_t i;
+    char *objalias = NULL;
+    char *netalias = NULL;
+    char *addr = NULL;
+    virJSONValuePtr props = NULL;
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+    int ret = -1;
+
+    for (i = 0; i < vm->def->nnets; i++) {
+        virDomainNetDefPtr net = vm->def->nets[i];
+
+        // TODO
+        if (virAsprintf(&objalias, "f%ld", i) < 0)
+            goto cleanup;
+
+        if (virAsprintf(&netalias, "host%s", net->info.alias) < 0)
+            goto cleanup;
+
+        /* TODO: Release the port after the COLO connection is closed. */
+        if (!port &&
+                virPortAllocatorAcquire(driver->migrationPorts, &port) < 0)
+            goto cleanup;
+
+        if (primary) {
+            if (virAsprintf(&addr, "%s:%d", hostname, port) < 0)
+                goto cleanup;
+        } else {
+            if (virAsprintf(&addr, ":%d", port) < 0)
+                goto cleanup;
+        }
+
+        if (virJSONValueObjectCreate(&props,
+                                     "s:netdev", netalias,
+                                     "s:queue", "all",
+                                     "s:mode", primary ? "primary" : "secondary",
+                                     "s:addr", addr,
+                                     NULL) < 0)
+                goto cleanup;
+
+        if (qemuDomainObjEnterMonitorAsync(driver, vm, job) < 0)
+            goto cleanup;
+        if (qemuMonitorAddObject(priv->mon, "colo-proxy", objalias, props) < 0)
+            goto exit_monitor;
+        if (qemuDomainObjExitMonitor(driver, vm) < 0)
+            goto cleanup;
+
+        priv->coloPort = port;
+    }
+
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(objalias);
+    VIR_FREE(netalias);
+    if (ret < 0)
+        virPortAllocatorRelease(driver->migrationPorts, port);
+    VIR_FREE(addr);
+    virJSONValueFree(props);
+    return ret;
+
+  exit_monitor:
+    ignore_value(qemuDomainObjExitMonitor(driver, vm));
+    goto cleanup;
+}
+
+static int
 qemuMigrationPrepareAny(virQEMUDriverPtr driver,
                         virConnectPtr dconn,
                         const char *cookiein,
@@ -3571,6 +3720,13 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
         cookieFlags |= QEMU_MIGRATION_COOKIE_NBD;
     }
 
+    if (flags & VIR_MIGRATE_COLO) {
+        if (qemuMigrationAddCOLOProxy(driver, vm, false, NULL, 0,
+                                      QEMU_ASYNC_JOB_MIGRATION_IN) < 0)
+            goto stopjob;
+        cookieFlags |= QEMU_MIGRATION_COOKIE_COLO;
+    }
+
     if (mig->lockState) {
         VIR_DEBUG("Received lockstate %s", mig->lockState);
         VIR_FREE(priv->lockState);
@@ -3630,6 +3786,8 @@ qemuMigrationPrepareAny(virQEMUDriverPtr driver,
         VIR_FREE(priv->origname);
         virPortAllocatorRelease(driver->migrationPorts, priv->nbdPort);
         priv->nbdPort = 0;
+        virPortAllocatorRelease(driver->migrationPorts, priv->coloPort);
+        priv->coloPort = 0;
         qemuDomainRemoveInactive(driver, vm);
     }
     virDomainObjEndAPI(&vm);
@@ -4370,6 +4528,9 @@ qemuMigrationRun(virQEMUDriverPtr driver,
         cookieFlags |= QEMU_MIGRATION_COOKIE_NBD;
     }
 
+    if (flags & VIR_MIGRATE_COLO)
+        cookieFlags |= QEMU_MIGRATION_COOKIE_COLO;
+
     if (virLockManagerPluginUsesState(driver->lockManager) &&
         !cookieout) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -4454,6 +4615,14 @@ qemuMigrationRun(virQEMUDriverPtr driver,
             VIR_DEBUG("Destination doesn't support NBD server "
                       "Falling back to previous implementation.");
         }
+    }
+
+    if (flags & VIR_MIGRATE_COLO) {
+        if (qemuMigrationAddCOLOProxy(driver, vm, true,
+                                      spec->dest.host.name,
+                                      mig->colo->port,
+                                      QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+            goto cleanup;
     }
 
     /* Before EnterMonitor, since qemuMigrationSetOffline already does that */
