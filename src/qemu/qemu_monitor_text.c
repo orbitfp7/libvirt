@@ -1496,7 +1496,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
             }
 
             if (virStrToLong_ull(checkpoint_length[3], &end, 10, 
-                                 &status->chkpt_length) < 0) {
+                                 &stats->chkpt_length) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint length time "
                                  "statistic %s"), tmp);
@@ -1518,7 +1518,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
             }
 
             if (virStrToLong_ull(checkpoint_pause[3], &end, 10, 
-                                 &status->chkpt_pause) < 0) {
+                                 &stats->chkpt_pause) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint pause time "
                                  "statistic %s"), tmp);
@@ -1541,7 +1541,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
 
 
             if (virStrToLong_ull(checkpoint_size[3], &end, 10,
-                                 &status->chkpt_size) < 0) {
+                                 &stats->chkpt_size) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint size "
                                  "statistic %s"), tmp);
@@ -1553,7 +1553,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                 goto done;
             tmp += strlen(CHECKPOINT_COUNT_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_count) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->chkpt_count) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint count "
                                  "statistic %s"), tmp);
@@ -1561,11 +1561,11 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
             }
 
             tmp = end;
-            if (!(tmp = strstr(tmp, CHECKPOINT_PROXY_DISCOMPARE))
+            if (!(tmp = strstr(tmp, CHECKPOINT_PROXY_DISCOMPARE)))
                 goto done;
             tmp += strlen(CHECKPOINT_PROXY_DISCOMPARE);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->chkpt_proxy_discompare) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->chkpt_proxy_discompare) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse proxy discompare count "
                                  "statistic %s"), tmp);

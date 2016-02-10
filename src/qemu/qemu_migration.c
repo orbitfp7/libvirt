@@ -828,19 +828,19 @@ qemuMigrationCookieStatisticsXMLFormat(virBufferPtr buf,
 
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
-                      status->chkpt_size);
+                      stats->chkpt_size);
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
-                      status->chkpt_length);
+                      stats->chkpt_length);
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
-                      status->chkpt_length);
+                      stats->chkpt_length);
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_COUNT,
-                      status->chkpt_count);
+                      stats->chkpt_count);
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE,
-                      status->chkpt_proxy_discompare);
+                      stats->chkpt_proxy_discompare);
 
 
     virBufferAdjustIndent(buf, -2);

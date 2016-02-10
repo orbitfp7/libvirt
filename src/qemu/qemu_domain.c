@@ -288,11 +288,11 @@ qemuDomainJobInfoToInfo(qemuDomainJobInfoPtr jobInfo,
     info->dataRemaining = info->memRemaining + info->fileRemaining;
     info->dataProcessed = info->memProcessed + info->fileProcessed;
 
-    info->chkptSize = jobInfo->status.chkpt_size;
-    info->chkptLength = jobInfo->status.chkpt_length;
-    info->chkptPause = jobInfo->status.chkpt_pause;
-    info->chkptCount = jobInfo->status.chkpt_count;
-    info->chkptProxyDiscompare = jobInfo->status.chkpt_proxy_discompare;
+    info->chkptSize = jobInfo->stats.chkpt_size;
+    info->chkptLength = jobInfo->stats.chkpt_length;
+    info->chkptPause = jobInfo->stats.chkpt_pause;
+    info->chkptCount = jobInfo->stats.chkpt_count;
+    info->chkptProxyDiscompare = jobInfo->stats.chkpt_proxy_discompare;
 
     return 0;
 }
