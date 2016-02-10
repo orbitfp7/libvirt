@@ -2446,6 +2446,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
     virJSONValuePtr ram;
     virJSONValuePtr disk;
     virJSONValuePtr comp;
+    virJSONValuePtr chkpt;
     const char *statusstr;
     int rc;
     double mbps;
@@ -2490,7 +2491,6 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
     case QEMU_MONITOR_MIGRATION_STATUS_SETUP:
     case QEMU_MONITOR_MIGRATION_STATUS_ERROR:
     case QEMU_MONITOR_MIGRATION_STATUS_CANCELLED:
-    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
     case QEMU_MONITOR_MIGRATION_STATUS_LAST:
         break;
 
@@ -2628,145 +2628,17 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                 return -1;
             }
         }
+        break;
 
-        virJSONValuePtr chkpt = virJSONValueObjectGet(ret, 
-                                            "colo-checkpoint-stats");
+    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
+        chkpt = virJSONValueObjectGet(ret, "colo-stats");
         if (chkpt) {
-            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
-
-            if (!(values /*&& virJSONValueIsArray(values)*/)) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO length is missing values array"));
-                return -1;
-            }
-
-            int n = virJSONValueArraySize(values) - 1;
-            if (n < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO length array is emptry"));
-                return -1;
-            }
-
-            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
-
-            rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &stats->chkpt_length);
-            if (rc < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but 'length' "
-                                 "data was missing"));
-                return -1;
-            }
-        }
-
-        chkpt = virJSONValueObjectGet(ret, "colo-size-stats");
-        if (chkpt) {
-            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
-
-            if (!(values /*&& virJSONValueIsArray(values)*/)) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO size is missing values array"));
-                return -1;
-            }
-
-            int n = virJSONValueArraySize(values) - 1;
-            if (n < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO size array is emptry"));
-                return -1;
-            }
-
-            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
-
-            rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &stats->chkpt_size);
-            if (rc < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but 'size' "
-                                 "data was missing"));
-                return -1;
-            }
-        }
-        
-        chkpt = virJSONValueObjectGet(ret, "colo-paused-stats");
-        if (chkpt) {
-            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
-
-            if (!(values /*&& virJSONValueIsArray(values)*/)) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO pause is missing values array"));
-                return -1;
-            }
-
-            int n = virJSONValueArraySize(values) - 1;
-            if (n < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO pause array is emptry"));
-                return -1;
-            }
-
-            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
-            rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &stats->chkpt_pause);
-            if (rc < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but 'pause' "
-                                 "data was missing"));
-                return -1;
-            }
-        }
-
-        chkpt = virJSONValueObjectGet(ret, "colo-count-stats");
-        if (chkpt) {
-            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
-
-            if (!(values /*&& virJSONValueIsArray(values)*/)) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO count is missing values array"));
-                return -1;
-            }
-
-            int n = virJSONValueArraySize(values) - 1;
-            if (n < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO count array is emptry"));
-                return -1;
-            }
-
-            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
-            rc = virJSONValueObjectGetNumberUlong(latest, "value",
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "checkpoint-count",
                                                   &stats->chkpt_count);
+
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but 'count' "
-                                 "data was missing"));
-                return -1;
-            }
-        }
-
-        chkpt = virJSONValueObjectGet(ret, "colo-proxy-discompare-stats");
-        if (chkpt) {
-            virJSONValuePtr values = virJSONValueObjectGet(chkpt, "values");
-
-            if (!(values /*&& virJSONValueIsArray(values)*/)) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO proxy-discompare is missing values array"));
-                return -1;
-            }
-
-            int n = virJSONValueArraySize(values) - 1;
-            if (n < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO proxy-discompare array is emptry"));
-                return -1;
-            }
-
-            virJSONValuePtr latest = virJSONValueArrayGet(values, n);
-            rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &stats->chkpt_proxy_discompare);
-            if (rc < 0) {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("COLO was active, but 'proxy discompare' "
+                               _("COLO was active, but 'checkpoint-count' "
                                  "data was missing"));
                 return -1;
             }

@@ -12940,6 +12940,7 @@ qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
         qemuDomainObjBeginJob(driver, vm, QEMU_JOB_QUERY) < 0)
         return -1;
 
+
     if (!completed &&
         !virDomainObjIsActive(vm)) {
         virReportError(VIR_ERR_OPERATION_INVALID, "%s",

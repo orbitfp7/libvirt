@@ -5987,10 +5987,8 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
         vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Size:"), val, unit);
         vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Length:"), info.chkptLength);
         vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Pause:"), info.chkptPause);
-        val = vshPrettyCapacity(info.chkptCount, &unit);
-        vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Count:"), val, unit);
-        val = vshPrettyCapacity(info.chkptProxyDiscompare, &unit);
-        vshPrint(ctl, "%-17s %-.3lf %s\n", _("Proxy Discompare Count:"), val, unit);
+        vshPrint(ctl, "%-17s %-.3lf\n", _("Checkpoint Count:"), val);
+        vshPrint(ctl, "%-17s %-.3lf\n", _("Proxy Discompare Count:"), val);
     }
 
     ret = true;
