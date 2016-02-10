@@ -2642,6 +2642,48 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                                  "data was missing"));
                 return -1;
             }
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "size-average",
+                                                  &stats->chkpt_size);
+
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'size-average' "
+                                 "data was missing"));
+                return -1;
+            }
+
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "length-average",
+                                                  &stats->chkpt_length);
+
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'length-average' "
+                                 "data was missing"));
+                return -1;
+            }
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "paused-average",
+                                                  &stats->chkpt_pause);
+
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'paused-average' "
+                                 "data was missing"));
+                return -1;
+            }
+
+            rc = virJSONValueObjectGetNumberUlong(chkpt, "proxy-discompare-count",
+                                                  &stats->chkpt_proxy_discompare);
+
+            if (rc < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("COLO was active, but 'proxy-discompare-count' "
+                                 "data was missing"));
+                return -1;
+            }
+
         }
         break;
     }
