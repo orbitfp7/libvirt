@@ -1646,11 +1646,11 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
     expectedStats.ram_total = 1611038720;
     expectedStats.ram_remaining = 1605013504;
     expectedStats.ram_transferred = 3625548;
-    expectedStatus.chkpt_size = 5001;
-    expectedStatus.chkpt_length = 74;
-    expectedStatus.chkpt_pause = 49;
-    expectedStatus.chkpt_count = 225;
-    expectedStatus.chkpt_proxy_discompare = 15;
+    expectedStats.chkpt_size = 5001;
+    expectedStats.chkpt_length = 74;
+    expectedStats.chkpt_pause = 49;
+    expectedStats.chkpt_count = 225;
+    expectedStats.chkpt_proxy_discompare = 15;
 
     if (qemuMonitorTestAddItem(test, "query-migrate",
                                "{"

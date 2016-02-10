@@ -1193,15 +1193,15 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
                       ctxt, &stats->xbzrle_overflow);
 
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_SIZE "[1])",
-                      ctxt, &status->chkpt_size);
+                      ctxt, &stats->chkpt_size);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_LENGTH "[1])",
-                      ctxt, &status->chkpt_length);
+                      ctxt, &stats->chkpt_length);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PAUSE "[1])",
-                      ctxt, &status->chkpt_pause);
+                      ctxt, &stats->chkpt_pause);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_COUNT "[1])",
-                      ctxt, &status->chkpt_count);
+                      ctxt, &stats->chkpt_count);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE "[1])",
-                      ctxt, &status->chkpt_proxy_discompare);
+                      ctxt, &stats->chkpt_proxy_discompare);
 
  cleanup:
     ctxt->node = save_ctxt;

@@ -2650,7 +2650,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
             virJSONValuePtr latest = virJSONValueArrayGet(values, n);
 
             rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &status->chkpt_length);
+                                                  &stats->chkpt_length);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("COLO was active, but 'length' "
@@ -2679,7 +2679,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
             virJSONValuePtr latest = virJSONValueArrayGet(values, n);
 
             rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &status->chkpt_size);
+                                                  &stats->chkpt_size);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("COLO was active, but 'size' "
@@ -2707,7 +2707,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
 
             virJSONValuePtr latest = virJSONValueArrayGet(values, n);
             rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &status->chkpt_pause);
+                                                  &stats->chkpt_pause);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("COLO was active, but 'pause' "
@@ -2735,7 +2735,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
 
             virJSONValuePtr latest = virJSONValueArrayGet(values, n);
             rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &status->chkpt_count);
+                                                  &stats->chkpt_count);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("COLO was active, but 'count' "
@@ -2763,7 +2763,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
 
             virJSONValuePtr latest = virJSONValueArrayGet(values, n);
             rc = virJSONValueObjectGetNumberUlong(latest, "value",
-                                                  &status->chkpt_proxy_discompare);
+                                                  &stats->chkpt_proxy_discompare);
             if (rc < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                                _("COLO was active, but 'proxy discompare' "
