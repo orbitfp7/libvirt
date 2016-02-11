@@ -99,6 +99,55 @@ virDomainQemuMonitorCommand(virDomainPtr domain, const char *cmd,
 
 
 /**
+ * virDomainColoLostHeartBeatCmd:
+ * @domain: a domain object
+ *
+ * Trigger a COLO Lost Heart Beat in domain
+ *
+ * This API is QEMU specific, so it will only work with hypervisor
+ * connections to the QEMU driver.
+ *
+ * Send an arbitrary COLO Lost Heart Beat monitor command to @domain through the
+ * qemu monitor. There are several requirements to safely and
+ * successfully use this API:
+ *
+ *   - A @cmd that queries state without making any modifications is safe
+ *   - A @cmd that alters state that is also tracked by libvirt is unsafe,
+ *     and may cause libvirtd to crash
+ *   - A @cmd that alters state not tracked by the current version of
+ *     libvirt is possible as a means to test new qemu features before
+ *     they have support in libvirt, but no guarantees are made to safety
+ *
+ * If VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP is set, the command is
+ * considered to be a human monitor command and libvirt will automatically
+ * convert it into QMP if needed.  In that case the @result will also
+ * be converted back from QMP.
+ *
+ * If successful, @result will be filled with the string output of the
+ * @cmd, and the caller must free this string.
+ *
+ * Returns result output in case of success, -1 in case of failure
+**/
+
+char *
+virDomainColoLostHeartBeatCmd(virDomainPtr domain)
+{
+    const char *monitor_cmd = "x_colo_lost_heartbeat";
+    char *result;
+    unsigned int flags = 0;
+
+    flags |= VIR_DOMAIN_QEMU_MONITOR_COMMAND_HMP;
+
+    if (virDomainQemuMonitorCommand(domain, monitor_cmd, &result, flags) < 0)
+        goto cleanup;
+
+    VIR_DEBUG("%s", result);
+
+ cleanup:
+    return result;
+}
+
+/**
  * virDomainQemuAttach:
  * @conn: pointer to a hypervisor connection
  * @pid_value: the UNIX process ID of the external QEMU process
