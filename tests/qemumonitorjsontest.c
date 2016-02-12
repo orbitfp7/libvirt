@@ -1646,11 +1646,6 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
     expectedStats.ram_total = 1611038720;
     expectedStats.ram_remaining = 1605013504;
     expectedStats.ram_transferred = 3625548;
-    expectedStats.chkpt_size = 5001;
-    expectedStats.chkpt_length = 74;
-    expectedStats.chkpt_pause = 49;
-    expectedStats.chkpt_count = 225;
-    expectedStats.chkpt_proxy_discompare = 15;
 
     if (qemuMonitorTestAddItem(test, "query-migrate",
                                "{"
@@ -1661,14 +1656,7 @@ testQemuMonitorJSONqemuMonitorJSONGetMigrationStats(const void *data)
                                "            \"total\": 1611038720,"
                                "            \"remaining\": 1605013504,"
                                "            \"transferred\": 3625548"
-                               "        },"
-                               "        \"colo-stats\": {"
-                               "            \"proxy-discompare-count\": 15,"
-                               "            \"length-average\": 74,"
-                               "            \"checkpoint-count\": 225,"
-                               "            \"size-average\": 5001,"
-                               "            \"paused-average\": 49"
-                               "        },"
+                               "        }"
                                "    },"
                                "    \"id\": \"libvirt-13\""
                                "}") < 0)
