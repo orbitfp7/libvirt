@@ -18874,7 +18874,7 @@ virDomainDiskDefFormat(virBufferPtr buf,
     /* Don't format backingStore to inactive XMLs until the code for
      * persistent storage of backing chains is ready. */
     if (
-        // !(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE) &&
+        !(flags & VIR_DOMAIN_DEF_FORMAT_INACTIVE) &&
         virDomainDiskBackingStoreFormat(buf, def->src->backingStore,
                                         def->src->backingStoreRaw, 1) < 0)
         return -1;
