@@ -250,9 +250,10 @@ test_programs += xlconfigtest
 endif WITH_LIBXL
 
 if WITH_QEMU
-test_programs += qemuxml2argvtest qemuxml2xmltest \
-	qemuargv2xmltest qemuhelptest domainsnapshotxml2xmltest \
-	qemumonitortest qemumonitorjsontest qemuhotplugtest \
+test_programs += qemuxml2argvtest \
+	#qemuargv2xmltest qemuhelptest domainsnapshotxml2xmltest \
+	qemuhelptest \
+	qemumonitortest qemumonitorjsontest \
 	qemuagenttest qemucapabilitiestest qemucaps2xmltest \
 	qemucommandutiltest
 endif WITH_QEMU
@@ -273,9 +274,9 @@ if WITH_VBOX
 test_programs += vboxsnapshotxmltest
 endif WITH_VBOX
 
-if WITH_VMX
-test_programs += vmx2xmltest xml2vmxtest
-endif WITH_VMX
+#if WITH_VMX
+#test_programs += vmx2xmltest xml2vmxtest
+#endif WITH_VMX
 
 if WITH_VMWARE
 test_programs += vmwarevertest
@@ -340,7 +341,7 @@ test_programs += metadatatest
 
 test_programs += secretxml2xmltest
 
-test_programs += genericxml2xmltest
+#test_programs += genericxml2xmltest
 
 if WITH_LINUX
 test_programs += virusbtest \
@@ -355,7 +356,6 @@ test_scripts = \
 	storagepoolschematest \
 	storagevolschematest \
 	domaincapsschematest \
-	domainschematest \
 	nodedevschematest \
 	nwfilterschematest \
 	domainsnapshotschematest \
