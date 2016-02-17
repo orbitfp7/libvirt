@@ -3517,7 +3517,6 @@ qemuMigrationAddCOLOProxy(virQEMUDriverPtr driver,
     if (ret < 0)
         virPortAllocatorRelease(driver->migrationPorts, port);
     VIR_FREE(addr);
-    virJSONValueFree(props);
     return ret;
 
   exit_monitor:
