@@ -175,7 +175,8 @@ VIR_ENUM_IMPL(qemuMonitorVMStatus,
               QEMU_MONITOR_VM_STATUS_LAST,
               "debug", "inmigrate", "internal-error", "io-error", "paused",
               "postmigrate", "prelaunch", "finish-migrate", "restore-vm",
-              "running", "save-vm", "shutdown", "watchdog", "guest-panicked")
+              "running", "save-vm", "shutdown", "watchdog", "guest-panicked",
+              "colo")
 
 typedef enum {
     QEMU_MONITOR_BLOCK_IO_STATUS_OK,
@@ -3340,6 +3341,9 @@ qemuMonitorVMStatusToPausedReason(const char *status)
 
     case QEMU_MONITOR_VM_STATUS_GUEST_PANICKED:
         return VIR_DOMAIN_PAUSED_CRASHED;
+
+    case QEMU_MONITOR_VM_STATUS_COLO:
+        return VIR_DOMAIN_PAUSED_COLO;
 
     /* unreachable from this point on */
     case QEMU_MONITOR_VM_STATUS_LAST:

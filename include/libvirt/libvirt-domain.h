@@ -91,6 +91,7 @@ typedef enum {
                                                wakeup event */
     VIR_DOMAIN_RUNNING_CRASHED = 9,         /* resumed from crashed */
     VIR_DOMAIN_RUNNING_POSTCOPY = 10,       /* running in post-copy migration mode */
+    VIR_DOMAIN_RUNNING_COLO = 11,           /* running in colo mode */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_RUNNING_LAST
@@ -120,6 +121,7 @@ typedef enum {
     VIR_DOMAIN_PAUSED_STARTING_UP = 11, /* the domain is being started */
     VIR_DOMAIN_PAUSED_POSTCOPY = 12,    /* paused for post-copy migration */
     VIR_DOMAIN_PAUSED_POSTCOPY_FAILED = 13, /* paused after failed post-copy */
+    VIR_DOMAIN_PAUSED_COLO = 14,        /* paused due to COLO migration */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_PAUSED_LAST
