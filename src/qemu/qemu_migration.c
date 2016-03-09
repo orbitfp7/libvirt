@@ -826,13 +826,13 @@ qemuMigrationCookieStatisticsXMLFormat(virBufferPtr buf,
                           stats->xbzrle_overflow);
     }
 
-    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+    virBufferAsprintf(buf, "<%1$s>%2$f</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
                       stats->chkpt_size);
-    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+    virBufferAsprintf(buf, "<%1$s>%2$f</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
                       stats->chkpt_length);
-    virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
+    virBufferAsprintf(buf, "<%1$s>%2$f</%1$s>\n",
                       VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
                       stats->chkpt_length);
     virBufferAsprintf(buf, "<%1$s>%2$llu</%1$s>\n",
@@ -1192,12 +1192,12 @@ qemuMigrationCookieStatisticsXMLParse(xmlXPathContextPtr ctxt)
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW "[1])",
                       ctxt, &stats->xbzrle_overflow);
 
-    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_SIZE "[1])",
-                      ctxt, &stats->chkpt_size);
-    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_LENGTH "[1])",
-                      ctxt, &stats->chkpt_length);
-    virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PAUSE "[1])",
-                      ctxt, &stats->chkpt_pause);
+    virXPathNumber("string(./" VIR_DOMAIN_JOB_CHECKPOINT_SIZE "[1])",
+                   ctxt, &stats->chkpt_size);
+    virXPathNumber("string(./" VIR_DOMAIN_JOB_CHECKPOINT_LENGTH "[1])",
+                   ctxt, &stats->chkpt_length);
+    virXPathNumber("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PAUSE "[1])",
+                   ctxt, &stats->chkpt_pause);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_COUNT "[1])",
                       ctxt, &stats->chkpt_count);
     virXPathULongLong("string(./" VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE "[1])",
@@ -2691,7 +2691,6 @@ qemuMigrationUpdateJobType(qemuDomainJobInfoPtr jobInfo)
 {
     switch ((qemuMonitorMigrationStatus) jobInfo->stats.status) {
     case QEMU_MONITOR_MIGRATION_STATUS_COMPLETED:
-    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
         jobInfo->type = VIR_DOMAIN_JOB_COMPLETED;
         break;
 
@@ -2710,6 +2709,7 @@ qemuMigrationUpdateJobType(qemuDomainJobInfoPtr jobInfo)
     case QEMU_MONITOR_MIGRATION_STATUS_SETUP:
     case QEMU_MONITOR_MIGRATION_STATUS_ACTIVE:
     case QEMU_MONITOR_MIGRATION_STATUS_POSTCOPY:
+    case QEMU_MONITOR_MIGRATION_STATUS_COLO:
     case QEMU_MONITOR_MIGRATION_STATUS_CANCELLING:
     case QEMU_MONITOR_MIGRATION_STATUS_LAST:
         break;
@@ -2868,6 +2868,15 @@ qemuMigrationCompleted(virQEMUDriverPtr driver,
         virReportError(VIR_ERR_OPERATION_FAILED, "%s",
                        _("Lost connection to destination host"));
         goto error;
+    }
+
+    /* COLO is an on-going process with executes migrations continously until
+     * it is turned off. The current solution to not keep the lock is by
+     * completing the migration job early.
+     */
+    if (jobInfo->stats.status == QEMU_MONITOR_MIGRATION_STATUS_COLO) {
+        VIR_DEBUG("Completing migration job early in COLO mode");
+        return 1;
     }
 
     /* In case of postcopy the source considers migration completed at the

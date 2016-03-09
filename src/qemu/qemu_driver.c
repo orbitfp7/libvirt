@@ -12928,12 +12928,18 @@ qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
     qemuDomainJobInfoPtr info;
     bool fetch = virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATION_EVENT);
     int ret = -1;
+    bool colo = vm->state.reason != VIR_DOMAIN_RUNNING_COLO;
 
     if (completed)
         fetch = false;
 
+    if (colo) {
+        if (qemuDomainObjBeginAsyncJob(driver, vm, QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
+            return -1;
+        priv->job.current->type = VIR_DOMAIN_JOB_UNBOUNDED;
+    }
     /* Do not ask QEMU if migration is not even running yet  */
-    if (!priv->job.current || !priv->job.current->stats.status)
+    else if (!priv->job.current || !priv->job.current->stats.status)
         fetch = false;
 
     if (fetch &&
@@ -12967,11 +12973,16 @@ qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
                                               jobInfo);
         else
             ret = qemuDomainJobInfoUpdateTime(jobInfo);
+
+        if (colo)
+            jobInfo->timeElapsed = 0;
     } else {
         ret = 0;
     }
 
  cleanup:
+    if (colo)
+        qemuDomainObjEndAsyncJob(driver, vm);
     if (fetch)
         qemuDomainObjEndJob(driver, vm);
     return ret;

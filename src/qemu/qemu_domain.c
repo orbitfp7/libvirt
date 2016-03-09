@@ -372,13 +372,13 @@ qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
                                 stats->ram_remaining) < 0)
         goto error;
 
-    if (virTypedParamsAddULLong(&par, &npar, &maxpar,
+    if (virTypedParamsAddDouble(&par, &npar, &maxpar,
                                 VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
                                 stats->chkpt_size) < 0 ||
-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+        virTypedParamsAddDouble(&par, &npar, &maxpar,
                                 VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
                                 stats->chkpt_length) < 0 ||
-        virTypedParamsAddULLong(&par, &npar, &maxpar,
+        virTypedParamsAddDouble(&par, &npar, &maxpar,
                                 VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
                                 stats->chkpt_pause) < 0 ||
         virTypedParamsAddULLong(&par, &npar, &maxpar,

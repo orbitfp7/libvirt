@@ -5777,13 +5777,13 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
             virTypedParamsGetULLong(params, nparams,
                                     VIR_DOMAIN_JOB_DISK_REMAINING,
                                     &info.fileRemaining) < 0 ||
-            virTypedParamsGetULLong(params, nparams,
+            virTypedParamsGetDouble(params, nparams,
                                     VIR_DOMAIN_JOB_CHECKPOINT_SIZE,
                                     &info.chkptSize) < 0 ||
-            virTypedParamsGetULLong(params, nparams,
+            virTypedParamsGetDouble(params, nparams,
                                     VIR_DOMAIN_JOB_CHECKPOINT_LENGTH,
                                     &info.chkptLength) < 0 ||
-            virTypedParamsGetULLong(params, nparams,
+            virTypedParamsGetDouble(params, nparams,
                                     VIR_DOMAIN_JOB_CHECKPOINT_PAUSE,
                                     &info.chkptPause) < 0 ||
             virTypedParamsGetULLong(params, nparams,
@@ -5816,14 +5816,16 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
         goto cleanup;
     }
 
-    vshPrint(ctl, "%-17s %-12llu ms\n", _("Time elapsed:"), info.timeElapsed);
-    if ((rc = virTypedParamsGetULLong(params, nparams,
-                                      VIR_DOMAIN_JOB_TIME_ELAPSED_NET,
-                                      &value)) < 0) {
-        goto save_error;
-    } else if (rc) {
-        vshPrint(ctl, "%-17s %-12llu ms\n", _("Time elapsed w/o network:"),
-                 value);
+    if (info.timeElapsed) {
+        vshPrint(ctl, "%-17s %-12llu ms\n", _("Time elapsed:"), info.timeElapsed);
+        if ((rc = virTypedParamsGetULLong(params, nparams,
+                                          VIR_DOMAIN_JOB_TIME_ELAPSED_NET,
+                                          &value)) < 0) {
+            goto save_error;
+        } else if (rc) {
+            vshPrint(ctl, "%-17s %-12llu ms\n", _("Time elapsed w/o network:"),
+                     value);
+        }
     }
 
     if (info.type == VIR_DOMAIN_JOB_BOUNDED)
@@ -5985,10 +5987,10 @@ cmdDomjobinfo(vshControl *ctl, const vshCmd *cmd)
     if (info.chkptSize || info.chkptLength || info.chkptPause || info.chkptCount || info.chkptProxyDiscompare) {
         val = vshPrettyCapacity(info.chkptSize, &unit);
         vshPrint(ctl, "%-17s %-.3lf %s\n", _("Checkpoint Size:"), val, unit);
-        vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Length:"), info.chkptLength);
-        vshPrint(ctl, "%-17s %-12llu ms\n", _("Checkpoint Pause:"), info.chkptPause);
-        vshPrint(ctl, "%-17s %-.3lf\n", _("Checkpoint Count:"), val);
-        vshPrint(ctl, "%-17s %-.3lf\n", _("Proxy Discompare Count:"), val);
+        vshPrint(ctl, "%-17s %-.3lf ms\n", _("Checkpoint Length:"), info.chkptLength);
+        vshPrint(ctl, "%-17s %-.3lf ms\n", _("Checkpoint Pause:"), info.chkptPause);
+        vshPrint(ctl, "%-17s %-13llu\n", _("Checkpoint Count:"), info.chkptCount);
+        vshPrint(ctl, "%-17s %-13llu\n", _("Proxy Discompare Count:"), info.chkptProxyDiscompare);
     }
 
     ret = true;

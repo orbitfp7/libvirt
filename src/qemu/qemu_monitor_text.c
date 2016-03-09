@@ -1496,7 +1496,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                 goto cleanup;
             }
 
-            if (virStrToLong_ull(checkpoint_length[3], &end, 10,
+            if (virStrToDouble(checkpoint_length[3], &end,
                                  &stats->chkpt_length) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint length time "
@@ -1518,7 +1518,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
                 goto cleanup;
             }
 
-            if (virStrToLong_ull(checkpoint_pause[3], &end, 10,
+            if (virStrToDouble(checkpoint_pause[3], &end,
                                  &stats->chkpt_pause) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint pause time "
@@ -1541,7 +1541,7 @@ int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
             }
 
 
-            if (virStrToLong_ull(checkpoint_size[3], &end, 10,
+            if (virStrToDouble(checkpoint_size[3], &end,
                                  &stats->chkpt_size) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse checkpoint size "

@@ -2556,9 +2556,9 @@ struct _virDomainJobInfo {
     unsigned long long fileRemaining;
 
     /* COLO's checkpoint's information */
-    unsigned long long chkptSize;
-    unsigned long long chkptLength;
-    unsigned long long chkptPause;
+    double chkptSize;
+    double chkptLength;
+    double chkptPause;
     unsigned long long chkptCount;
     unsigned long long chkptProxyDiscompare;
 };

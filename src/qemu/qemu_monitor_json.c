@@ -2644,7 +2644,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                 return -1;
             }
 
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "size-average",
+            rc = virJSONValueObjectGetNumberDouble(chkpt, "size-average",
                                                   &stats->chkpt_size);
 
             if (rc < 0) {
@@ -2655,7 +2655,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
             }
 
 
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "length-average",
+            rc = virJSONValueObjectGetNumberDouble(chkpt, "length-average",
                                                   &stats->chkpt_length);
 
             if (rc < 0) {
@@ -2665,7 +2665,7 @@ qemuMonitorJSONGetMigrationStatsReply(virJSONValuePtr reply,
                 return -1;
             }
 
-            rc = virJSONValueObjectGetNumberUlong(chkpt, "paused-average",
+            rc = virJSONValueObjectGetNumberDouble(chkpt, "paused-average",
                                                   &stats->chkpt_pause);
 
             if (rc < 0) {
