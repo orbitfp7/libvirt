@@ -12917,6 +12917,27 @@ qemuConnectBaselineCPU(virConnectPtr conn ATTRIBUTE_UNUSED,
     return cpu;
 }
 
+static int
+qemuDomainIsCOLOPrimary(virQEMUDriverPtr driver,
+                        virDomainObjPtr vm,
+                        bool *isPrimary)
+{
+    char *mode = NULL;
+    qemuDomainObjPrivatePtr priv = vm->privateData;
+
+    if (qemuDomainObjBeginJob(driver, vm, QEMU_JOB_QUERY) < 0)
+        return -1;
+
+    qemuDomainObjEnterMonitor(driver, vm);
+    if (qemuMonitorGetCOLOMode(priv->mon, &mode) == 0)
+        *isPrimary = STREQ(mode, "primary");
+    if (qemuDomainObjExitMonitor(driver, vm) < 0)
+        return -1;
+
+    qemuDomainObjEndJob(driver, vm);
+    VIR_FREE(mode);
+    return 0;
+}
 
 static int
 qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
@@ -12928,12 +12949,14 @@ qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
     qemuDomainJobInfoPtr info;
     bool fetch = virQEMUCapsGet(priv->qemuCaps, QEMU_CAPS_MIGRATION_EVENT);
     int ret = -1;
-    bool colo = vm->state.reason != VIR_DOMAIN_RUNNING_COLO;
+    bool COLOPrimary = false;
+    if (qemuDomainIsCOLOPrimary(driver, vm, &COLOPrimary) < 0)
+        return -1;
 
     if (completed)
         fetch = false;
 
-    if (colo) {
+    if (COLOPrimary) {
         if (qemuDomainObjBeginAsyncJob(driver, vm, QEMU_ASYNC_JOB_MIGRATION_OUT) < 0)
             return -1;
         priv->job.current->type = VIR_DOMAIN_JOB_UNBOUNDED;
@@ -12974,17 +12997,17 @@ qemuDomainGetJobStatsInternal(virQEMUDriverPtr driver,
         else
             ret = qemuDomainJobInfoUpdateTime(jobInfo);
 
-        if (colo)
+        if (COLOPrimary)
             jobInfo->timeElapsed = 0;
     } else {
         ret = 0;
     }
 
  cleanup:
-    if (colo)
-        qemuDomainObjEndAsyncJob(driver, vm);
     if (fetch)
         qemuDomainObjEndJob(driver, vm);
+    if (COLOPrimary)
+        qemuDomainObjEndAsyncJob(driver, vm);
     return ret;
 }
 

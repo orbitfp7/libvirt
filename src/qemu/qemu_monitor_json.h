@@ -488,4 +488,7 @@ int qemuMonitorJSONMigrateIncoming(qemuMonitorPtr mon,
 int qemuMonitorJSONMigrateStartPostCopy(qemuMonitorPtr mon)
     ATTRIBUTE_NONNULL(1);
 
+int qemuMonitorJSONGetCOLOMode(qemuMonitorPtr mon, char **mode)
+    ATTRIBUTE_NONNULL(1);
+
 #endif /* QEMU_MONITOR_JSON_H */

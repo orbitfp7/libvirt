@@ -956,6 +956,8 @@ int qemuMonitorMigrateIncoming(qemuMonitorPtr mon,
 
 int qemuMonitorMigrateStartPostCopy(qemuMonitorPtr mon);
 
+int qemuMonitorGetCOLOMode(qemuMonitorPtr mon, char **mode);
+
 /**
  * When running two dd process and using <> redirection, we need a
  * shell that will not truncate files.  These two strings serve that

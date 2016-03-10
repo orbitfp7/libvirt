@@ -6763,3 +6763,40 @@ qemuMonitorJSONMigrateStartPostCopy(qemuMonitorPtr mon)
     virJSONValueFree(reply);
     return ret;
 }
+
+int
+qemuMonitorJSONGetCOLOMode(qemuMonitorPtr mon ATTRIBUTE_UNUSED, char **mode)
+{
+    // TODO
+    const char *path = "/objects/f0";
+    int ret = -1;
+    virJSONValuePtr cmd;
+    virJSONValuePtr reply = NULL;
+    virJSONValuePtr data;
+    const char *tmp ="asd";
+
+    if (!(cmd = qemuMonitorJSONMakeCommand("qom-get",
+                                           "s:path", path,
+                                           "s:property", "mode",
+                                           NULL)))
+        return -1;
+
+    if (qemuMonitorJSONCommand(mon, cmd, &reply) < 0)
+        goto cleanup;
+
+    if (!(data = virJSONValueObjectGet(reply, "return")))
+        goto cleanup;
+
+    if (!(tmp = virJSONValueGetString(data)))
+        goto cleanup;
+
+    if (VIR_STRDUP(*mode, tmp) < 0)
+        goto cleanup;
+
+    ret = 0;
+
+  cleanup:
+    virJSONValueFree(cmd);
+    virJSONValueFree(reply);
+    return ret;
+}

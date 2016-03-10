@@ -3834,3 +3834,13 @@ qemuMonitorMigrateStartPostCopy(qemuMonitorPtr mon)
 
     return qemuMonitorJSONMigrateStartPostCopy(mon);
 }
+
+int
+qemuMonitorGetCOLOMode(qemuMonitorPtr mon, char **mode)
+{
+    VIR_DEBUG("mon=%p", mon);
+
+    QEMU_CHECK_MONITOR_JSON(mon);
+
+    return qemuMonitorJSONGetCOLOMode(mon, mode);
+}
