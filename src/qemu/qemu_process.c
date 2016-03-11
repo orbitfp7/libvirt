@@ -5109,6 +5109,36 @@ qemuProcessLaunch(virConnectPtr conn,
                                       incoming ? incoming->path : NULL) < 0)
         goto cleanup;
 
+    /* TODO(ORBIT): Currently using this super ugly fix to set the correct
+     *              security labels on quorum disks until quorums are
+     *              implemented in libvirt.
+     */
+    if (vm->def->namespaceData) {
+        qemuDomainCmdlineDefPtr qemucmd = vm->def->namespaceData;
+        const char *pArg = "file.filename=";
+        char *path;
+        for (i = 0; i < qemucmd->num_args; i++) {
+            if (strstr(qemucmd->args[i], "driver=quorum")) {
+                char *start = strstr(qemucmd->args[i], pArg) + strlen(pArg);
+                size_t length = strlen(start) - strlen(strchr(start, ',')) + 1;
+                if (VIR_ALLOC_N(path, length) < 0)
+                    goto cleanup;
+                snprintf(path, length, "%s", start);
+                VIR_DEBUG("Setting ownership of %s to %d:%d", path,
+                          (int) cfg->user, (int) cfg->group);
+                if (chown(path, cfg->user, cfg->group) < 0) {
+                    virReportSystemError(errno,
+                                         _("unable to set ownership of '%s' "
+                                           "to user %d:%d"), path,
+                                         (int) cfg->user, (int) cfg->group);
+                    VIR_FREE(path);
+                    goto cleanup;
+                }
+                VIR_FREE(path);
+            }
+        }
+    }
+
     /* Security manager labeled all devices, therefore
      * if any operation from now on fails, we need to ask the caller to
      * restore labels.
