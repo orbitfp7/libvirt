@@ -44,9 +44,9 @@ char *virStringJoin(const char **strings,
 void virStringFreeList(char **strings);
 void virStringFreeListCount(char **strings, size_t count);
 
-size_t virStringListLen(const char **strings);
-
 bool virStringArrayHasString(char **strings, const char *needle);
+char *virStringGetFirstWithPrefix(char **strings, const char *prefix)
+    ATTRIBUTE_NONNULL(2);
 
 char *virArgvToString(const char *const *argv);
 
@@ -201,7 +201,7 @@ int virVasprintfInternal(bool report, int domcode, const char *filename,
 # define VIR_STRNDUP_QUIET(dst, src, n) virStrndup(&(dst), src, n, false, \
                                                    0, NULL, NULL, 0)
 
-size_t virStringListLength(char **strings);
+size_t virStringListLength(const char * const *strings);
 
 /**
  * virVasprintf
@@ -258,6 +258,7 @@ size_t virStringListLength(char **strings);
 
 int virStringSortCompare(const void *a, const void *b);
 int virStringSortRevCompare(const void *a, const void *b);
+int virStringToUpper(char **dst, const char *src);
 
 ssize_t virStringSearch(const char *str,
                         const char *regexp,
@@ -271,5 +272,7 @@ char *virStringReplace(const char *haystack,
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
 
 void virStringStripIPv6Brackets(char *str);
+bool virStringHasControlChars(const char *str);
+void virStringStripControlChars(char *str);
 
 #endif /* __VIR_STRING_H__ */

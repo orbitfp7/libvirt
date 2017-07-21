@@ -1403,7 +1403,7 @@ virNWFilterDHCPSnoopThread(void *req0)
     }
 
     /* let creator know how well we initialized */
-    if (error == true || !threadkey || tmp < 0 || !worker ||
+    if (error || !threadkey || tmp < 0 || !worker ||
         ifindex != req->ifindex)
         req->threadStatus = THREAD_STATUS_FAIL;
     else
@@ -1509,7 +1509,7 @@ virNWFilterDHCPSnoopThread(void *req0)
                     if (last_displayed_queue - time(0) > 10) {
                         last_displayed_queue = time(0);
                         VIR_WARN("Worker thread for interface '%s' has a "
-                                 "job queue that is too long\n",
+                                 "job queue that is too long",
                                  req->ifname);
                     }
                     continue;
@@ -1958,8 +1958,8 @@ virNWFilterSnoopLeaseFileLoad(void)
             break;
         }
         ln++;
-        /* key len 55 = "VMUUID"+'-'+"MAC" */
-        if (sscanf(line, "%u %55s %16s %16s", &ipl.timeout,
+        /* key len 54 = "VMUUID"+'-'+"MAC" */
+        if (sscanf(line, "%u %54s %15s %15s", &ipl.timeout,
                    ifkey, ipstr, srvstr) < 4) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("virNWFilterSnoopLeaseFileLoad lease file "
@@ -2017,7 +2017,7 @@ static void
 virNWFilterSnoopJoinThreads(void)
 {
     while (virAtomicIntGet(&virNWFilterSnoopState.nThreads) != 0) {
-        VIR_WARN("Waiting for snooping threads to terminate: %u\n",
+        VIR_WARN("Waiting for snooping threads to terminate: %u",
                  virAtomicIntGet(&virNWFilterSnoopState.nThreads));
         usleep(1000 * 1000);
     }

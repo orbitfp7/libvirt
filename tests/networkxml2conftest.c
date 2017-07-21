@@ -21,8 +21,6 @@
 static int
 testCompareXMLToConfFiles(const char *inxml, const char *outconf, dnsmasqCapsPtr caps)
 {
-    char *inXmlData = NULL;
-    char *outConfData = NULL;
     char *actual = NULL;
     int ret = -1;
     virNetworkDefPtr dev = NULL;
@@ -31,16 +29,10 @@ testCompareXMLToConfFiles(const char *inxml, const char *outconf, dnsmasqCapsPtr
     char *pidfile = NULL;
     dnsmasqContext *dctx = NULL;
 
-    if (virtTestLoadFile(inxml, &inXmlData) < 0)
+    if (!(dev = virNetworkDefParseFile(inxml)))
         goto fail;
 
-    if (virtTestLoadFile(outconf, &outConfData) < 0)
-        goto fail;
-
-    if (!(dev = virNetworkDefParseString(inXmlData)))
-        goto fail;
-
-    if (VIR_ALLOC(obj) < 0)
+    if (!(obj = virNetworkObjNew()))
         goto fail;
 
     obj->def = dev;
@@ -53,20 +45,16 @@ testCompareXMLToConfFiles(const char *inxml, const char *outconf, dnsmasqCapsPtr
                         dctx, caps) < 0)
         goto fail;
 
-    if (STRNEQ(outConfData, actual)) {
-        virtTestDifference(stderr, outConfData, actual);
+    if (virtTestCompareToFile(actual, outconf) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
-    VIR_FREE(inXmlData);
-    VIR_FREE(outConfData);
     VIR_FREE(actual);
     VIR_FREE(pidfile);
     virCommandFree(cmd);
-    virNetworkObjFree(obj);
+    virObjectUnref(obj);
     dnsmasqContextFree(dctx);
     return ret;
 }
@@ -127,6 +115,7 @@ mymain(void)
     DO_TEST("netboot-network", restricted);
     DO_TEST("netboot-proxy-network", restricted);
     DO_TEST("nat-network-dns-srv-record-minimal", restricted);
+    DO_TEST("nat-network-name-with-quotes", restricted);
     DO_TEST("routed-network", full);
     DO_TEST("nat-network", dhcpv6);
     DO_TEST("nat-network-dns-txt-record", full);

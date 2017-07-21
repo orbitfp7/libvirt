@@ -24,6 +24,8 @@
 #ifndef __QEMUD_CONF_H
 # define __QEMUD_CONF_H
 
+# include <unistd.h>
+
 # include "virebtables.h"
 # include "internal.h"
 # include "capabilities.h"
@@ -81,7 +83,6 @@ typedef virQEMUDriverConfig *virQEMUDriverConfigPtr;
 struct _virQEMUDriverConfig {
     virObject parent;
 
-    bool privileged;
     const char *uri;
 
     uid_t user;
@@ -104,6 +105,8 @@ struct _virQEMUDriverConfig {
     char *cacheDir;
     char *saveDir;
     char *snapshotDir;
+    char *channelTargetDir;
+    char *nvramDir;
 
     bool vncAutoUnixSocket;
     bool vncTLS;
@@ -172,6 +175,7 @@ struct _virQEMUDriverConfig {
     int migrationPortMax;
 
     bool logTimestamp;
+    bool stdioLogD;
 
     /* Pairs of loader:nvram paths. The list is @nloader items long */
     char **loader;
@@ -191,10 +195,13 @@ struct _virQEMUDriver {
     virThreadPoolPtr workerPool;
 
     /* Atomic increment only */
-    int nextvmid;
+    int lastvmid;
 
     /* Atomic inc/dec only */
     unsigned int nactive;
+
+    /* Immutable value */
+    bool privileged;
 
     /* Immutable pointers. Caller must provide locking */
     virStateInhibitCallback inhibitCallback;
@@ -248,6 +255,9 @@ struct _virQEMUDriver {
 
     /* Immutable pointer, self-clocking APIs */
     virCloseCallbacksPtr closeCallbacks;
+
+    /* Immutable pointer, self-locking APIs */
+    virHashAtomicPtr migrationErrors;
 };
 
 typedef struct _qemuDomainCmdlineDef qemuDomainCmdlineDef;
@@ -271,6 +281,7 @@ int virQEMUDriverConfigLoadFile(virQEMUDriverConfigPtr cfg,
                                 const char *filename);
 
 virQEMUDriverConfigPtr virQEMUDriverGetConfig(virQEMUDriverPtr driver);
+bool virQEMUDriverIsPrivileged(virQEMUDriverPtr driver);
 
 virCapsPtr virQEMUDriverCreateCapabilities(virQEMUDriverPtr driver);
 virCapsPtr virQEMUDriverGetCapabilities(virQEMUDriverPtr driver,
@@ -288,7 +299,7 @@ typedef qemuSharedDeviceEntry *qemuSharedDeviceEntryPtr;
 
 bool qemuSharedDeviceEntryDomainExists(qemuSharedDeviceEntryPtr entry,
                                        const char *name,
-                                       int *index)
+                                       int *idx)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 char *qemuGetSharedDeviceKey(const char *disk_path)

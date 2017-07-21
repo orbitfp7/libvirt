@@ -4,7 +4,7 @@
  * Description: Provides APIs for the management of storage pools and volumes
  * Author: Daniel Veillard <veillard@redhat.com>
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2016 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -57,7 +57,6 @@ typedef enum {
 # endif
 } virStoragePoolState;
 
-
 typedef enum {
     VIR_STORAGE_POOL_BUILD_NEW  = 0,   /* Regular build from scratch */
     VIR_STORAGE_POOL_BUILD_REPAIR = (1 << 0), /* Repair / reinitialize */
@@ -70,6 +69,23 @@ typedef enum {
     VIR_STORAGE_POOL_DELETE_NORMAL = 0, /* Delete metadata only    (fast) */
     VIR_STORAGE_POOL_DELETE_ZEROED = 1 << 0,  /* Clear all data to zeros (slow) */
 } virStoragePoolDeleteFlags;
+
+typedef enum {
+    VIR_STORAGE_POOL_CREATE_NORMAL = 0,
+
+    /* Create the pool and perform pool build without any flags */
+    VIR_STORAGE_POOL_CREATE_WITH_BUILD = 1 << 0,
+
+    /* Create the pool and perform pool build using the
+     * VIR_STORAGE_POOL_BUILD_OVERWRITE flag. This is mutually
+     * exclusive to VIR_STORAGE_POOL_CREATE_WITH_BUILD_NO_OVERWRITE */
+    VIR_STORAGE_POOL_CREATE_WITH_BUILD_OVERWRITE = 1 << 1,
+
+    /* Create the pool and perform pool build using the
+     * VIR_STORAGE_POOL_BUILD_NO_OVERWRITE flag. This is mutually
+     * exclusive to VIR_STORAGE_POOL_CREATE_WITH_BUILD_OVERWRITE */
+    VIR_STORAGE_POOL_CREATE_WITH_BUILD_NO_OVERWRITE = 1 << 2,
+} virStoragePoolCreateFlags;
 
 typedef struct _virStoragePoolInfo virStoragePoolInfo;
 
@@ -115,6 +131,7 @@ typedef enum {
 typedef enum {
     VIR_STORAGE_VOL_DELETE_NORMAL = 0, /* Delete metadata only    (fast) */
     VIR_STORAGE_VOL_DELETE_ZEROED = 1 << 0,  /* Clear all data to zeros (slow) */
+    VIR_STORAGE_VOL_DELETE_WITH_SNAPSHOTS = 1 << 1, /* Force removal of volume, even if in use */
 } virStorageVolDeleteFlags;
 
 typedef enum {
@@ -135,6 +152,9 @@ typedef enum {
     VIR_STORAGE_VOL_WIPE_ALG_PFITZNER33 = 7, /* 33-pass random */
 
     VIR_STORAGE_VOL_WIPE_ALG_RANDOM = 8, /* 1-pass random */
+
+    VIR_STORAGE_VOL_WIPE_ALG_TRIM = 9, /* 1-pass, trim all data on the
+                                          volume by using TRIM or DISCARD */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_STORAGE_VOL_WIPE_ALG_LAST

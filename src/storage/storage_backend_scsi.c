@@ -43,8 +43,8 @@ VIR_LOG_INIT("storage.storage_backend_scsi");
 typedef struct _virStoragePoolFCRefreshInfo virStoragePoolFCRefreshInfo;
 typedef virStoragePoolFCRefreshInfo *virStoragePoolFCRefreshInfoPtr;
 struct _virStoragePoolFCRefreshInfo {
-    char *name;
-    virStoragePoolObjPtr pool;
+    char *fchost_name;
+    unsigned char pool_uuid[VIR_UUID_BUFLEN];
 };
 
 /* Function to check if the type file in the given sysfs_path is a
@@ -146,6 +146,16 @@ virStorageBackendSCSISerial(const char *dev)
 }
 
 
+/*
+ * Attempt to create a new LUN
+ *
+ * Returns:
+ *
+ *  0  => Success
+ *  -1 => Failure due to some sort of OOM or other fatal issue found when
+ *        attempting to get/update information about a found volume
+ *  -2 => Failure to find a stable path, not fatal, caller can try another
+ */
 static int
 virStorageBackendSCSINewLun(virStoragePoolObjPtr pool,
                             uint32_t host ATTRIBUTE_UNUSED,
@@ -154,14 +164,28 @@ virStorageBackendSCSINewLun(virStoragePoolObjPtr pool,
                             uint32_t lun,
                             const char *dev)
 {
-    virStorageVolDefPtr vol;
+    virStorageVolDefPtr vol = NULL;
     char *devpath = NULL;
-    int retval = 0;
+    int retval = -1;
 
-    if (VIR_ALLOC(vol) < 0) {
-        retval = -1;
-        goto out;
+    /* Check if the pool is using a stable target path. The call to
+     * virStorageBackendStablePath will fail if the pool target path
+     * isn't stable and just return the strdup'd 'devpath' anyway.
+     * This would be indistinguishable to failing to find the stable
+     * path to the device if the virDirRead loop to search the
+     * target pool path for our devpath had failed.
+     */
+    if (!virStorageBackendPoolPathIsStable(pool->def->target.path) &&
+        !(STREQ(pool->def->target.path, "/dev") ||
+          STREQ(pool->def->target.path, "/dev/"))) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("unable to use target path '%s' for dev '%s'"),
+                       NULLSTR(pool->def->target.path), dev);
+        goto cleanup;
     }
+
+    if (VIR_ALLOC(vol) < 0)
+        goto cleanup;
 
     vol->type = VIR_STORAGE_VOL_BLOCK;
 
@@ -170,15 +194,11 @@ virStorageBackendSCSINewLun(virStoragePoolObjPtr pool,
      * in the volume name. We only need uniqueness per-pool, so
      * just leave 'host' out
      */
-    if (virAsprintf(&(vol->name), "unit:%u:%u:%u", bus, target, lun) < 0) {
-        retval = -1;
-        goto free_vol;
-    }
+    if (virAsprintf(&(vol->name), "unit:%u:%u:%u", bus, target, lun) < 0)
+        goto cleanup;
 
-    if (virAsprintf(&devpath, "/dev/%s", dev) < 0) {
-        retval = -1;
-        goto free_vol;
-    }
+    if (virAsprintf(&devpath, "/dev/%s", dev) < 0)
+        goto cleanup;
 
     VIR_DEBUG("Trying to create volume for '%s'", devpath);
 
@@ -190,10 +210,8 @@ virStorageBackendSCSINewLun(virStoragePoolObjPtr pool,
      */
     if ((vol->target.path = virStorageBackendStablePath(pool,
                                                         devpath,
-                                                        true)) == NULL) {
-        retval = -1;
-        goto free_vol;
-    }
+                                                        true)) == NULL)
+        goto cleanup;
 
     if (STREQ(devpath, vol->target.path) &&
         !(STREQ(pool->def->target.path, "/dev") ||
@@ -202,34 +220,30 @@ virStorageBackendSCSINewLun(virStoragePoolObjPtr pool,
         VIR_DEBUG("No stable path found for '%s' in '%s'",
                   devpath, pool->def->target.path);
 
-        retval = -1;
-        goto free_vol;
+        retval = -2;
+        goto cleanup;
     }
 
-    if (virStorageBackendUpdateVolInfo(vol, true, true,
-                                       VIR_STORAGE_VOL_OPEN_DEFAULT) < 0) {
-        retval = -1;
-        goto free_vol;
-    }
+    /* Allow a volume read failure to ignore or skip this block file */
+    if ((retval = virStorageBackendUpdateVolInfo(vol, true,
+                                                 VIR_STORAGE_VOL_OPEN_DEFAULT,
+                                                 VIR_STORAGE_VOL_READ_NOERROR)) < 0)
+        goto cleanup;
 
-    if (!(vol->key = virStorageBackendSCSISerial(vol->target.path))) {
-        retval = -1;
-        goto free_vol;
-    }
+    if (!(vol->key = virStorageBackendSCSISerial(vol->target.path)))
+        goto cleanup;
 
     pool->def->capacity += vol->target.capacity;
     pool->def->allocation += vol->target.allocation;
 
-    if (VIR_APPEND_ELEMENT(pool->volumes.objs, pool->volumes.count, vol) < 0) {
-        retval = -1;
-        goto free_vol;
-    }
+    if (VIR_APPEND_ELEMENT(pool->volumes.objs, pool->volumes.count, vol) < 0)
+        goto cleanup;
 
-    goto out;
+    vol = NULL;
+    retval = 0;
 
- free_vol:
+ cleanup:
     virStorageVolDefFree(vol);
- out:
     VIR_FREE(devpath);
     return retval;
 }
@@ -243,44 +257,41 @@ getNewStyleBlockDevice(const char *lun_path,
     char *block_path = NULL;
     DIR *block_dir = NULL;
     struct dirent *block_dirent = NULL;
-    int retval = 0;
+    int retval = -1;
     int direrr;
 
     if (virAsprintf(&block_path, "%s/block", lun_path) < 0)
-        goto out;
+        goto cleanup;
 
     VIR_DEBUG("Looking for block device in '%s'", block_path);
 
-    block_dir = opendir(block_path);
-    if (block_dir == NULL) {
+    if (!(block_dir = opendir(block_path))) {
         virReportSystemError(errno,
                              _("Failed to opendir sysfs path '%s'"),
                              block_path);
-        retval = -1;
-        goto out;
+        goto cleanup;
     }
 
     while ((direrr = virDirRead(block_dir, &block_dirent, block_path)) > 0) {
-
         if (STREQLEN(block_dirent->d_name, ".", 1))
             continue;
 
-        if (VIR_STRDUP(*block_device, block_dirent->d_name) < 0) {
-            closedir(block_dir);
-            retval = -1;
-            goto out;
-        }
+        if (VIR_STRDUP(*block_device, block_dirent->d_name) < 0)
+            goto cleanup;
 
         VIR_DEBUG("Block device is '%s'", *block_device);
 
         break;
     }
+
     if (direrr < 0)
-        retval = -1;
+        goto cleanup;
 
-    closedir(block_dir);
+    retval = 0;
 
- out:
+ cleanup:
+    if (block_dir)
+        closedir(block_dir);
     VIR_FREE(block_path);
     return retval;
 }
@@ -292,31 +303,38 @@ getOldStyleBlockDevice(const char *lun_path ATTRIBUTE_UNUSED,
                        char **block_device)
 {
     char *blockp = NULL;
-    int retval = 0;
+    int retval = -1;
 
     /* old-style; just parse out the sd */
-    blockp = strrchr(block_name, ':');
-    if (blockp == NULL) {
+    if (!(blockp = strrchr(block_name, ':'))) {
         /* Hm, wasn't what we were expecting; have to give up */
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to parse block name %s"),
                        block_name);
-        retval = -1;
+        goto cleanup;
     } else {
         blockp++;
-        if (VIR_STRDUP(*block_device, blockp) < 0) {
-            retval = -1;
-            goto out;
-        }
+        if (VIR_STRDUP(*block_device, blockp) < 0)
+            goto cleanup;
 
         VIR_DEBUG("Block device is '%s'", *block_device);
     }
 
- out:
+    retval = 0;
+ cleanup:
     return retval;
 }
 
 
+/*
+ * Search a device entry for the "block" file
+ *
+ * Returns
+ *
+ *   0 => Found it
+ *   -1 => Fatal error
+ *   -2 => Didn't find in lun_path directory
+ */
 static int
 getBlockDevice(uint32_t host,
                uint32_t bus,
@@ -330,41 +348,61 @@ getBlockDevice(uint32_t host,
     int retval = -1;
     int direrr;
 
+    *block_device = NULL;
+
     if (virAsprintf(&lun_path, "/sys/bus/scsi/devices/%u:%u:%u:%u",
                     host, bus, target, lun) < 0)
-        goto out;
+        goto cleanup;
 
-    lun_dir = opendir(lun_path);
-    if (lun_dir == NULL) {
+    if (!(lun_dir = opendir(lun_path))) {
         virReportSystemError(errno,
                              _("Failed to opendir sysfs path '%s'"),
                              lun_path);
-        goto out;
+        goto cleanup;
     }
 
     while ((direrr = virDirRead(lun_dir, &lun_dirent, lun_path)) > 0) {
         if (STREQLEN(lun_dirent->d_name, "block", 5)) {
             if (strlen(lun_dirent->d_name) == 5) {
-                retval = getNewStyleBlockDevice(lun_path,
-                                                lun_dirent->d_name,
-                                                block_device);
+                if (getNewStyleBlockDevice(lun_path,
+                                           lun_dirent->d_name,
+                                           block_device) < 0)
+                    goto cleanup;
             } else {
-                retval = getOldStyleBlockDevice(lun_path,
-                                                lun_dirent->d_name,
-                                                block_device);
+                if (getOldStyleBlockDevice(lun_path,
+                                           lun_dirent->d_name,
+                                           block_device) < 0)
+                    goto cleanup;
             }
             break;
         }
     }
+    if (direrr < 0)
+        goto cleanup;
+    if (!*block_device) {
+        retval = -2;
+        goto cleanup;
+    }
 
-    closedir(lun_dir);
+    retval = 0;
 
- out:
+ cleanup:
+    if (lun_dir)
+        closedir(lun_dir);
     VIR_FREE(lun_path);
     return retval;
 }
 
 
+/*
+ * Process a Logical Unit entry from the scsi host device directory
+ *
+ * Returns:
+ *
+ *  0  => Found a valid entry
+ *  -1 => Some sort of fatal error
+ *  -2 => non-fatal error or a non-disk entry
+ */
 static int
 processLU(virStoragePoolObjPtr pool,
           uint32_t host,
@@ -372,7 +410,6 @@ processLU(virStoragePoolObjPtr pool,
           uint32_t target,
           uint32_t lun)
 {
-    char *type_path = NULL;
     int retval = -1;
     int device_type;
     char *block_device = NULL;
@@ -384,7 +421,7 @@ processLU(virStoragePoolObjPtr pool,
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Failed to determine if %u:%u:%u:%u is a Direct-Access LUN"),
                        host, bus, target, lun);
-        goto out;
+        return -1;
     }
 
     /* We don't create volumes for devices other than disk and cdrom
@@ -392,43 +429,36 @@ processLU(virStoragePoolObjPtr pool,
      * isn't an error, either. */
     if (!(device_type == VIR_STORAGE_DEVICE_TYPE_DISK ||
           device_type == VIR_STORAGE_DEVICE_TYPE_ROM))
-    {
-        retval = 0;
-        goto out;
-    }
+        return -2;
 
     VIR_DEBUG("%u:%u:%u:%u is a Direct-Access LUN",
               host, bus, target, lun);
 
-    if (getBlockDevice(host, bus, target, lun, &block_device) < 0) {
+    if ((retval = getBlockDevice(host, bus, target, lun, &block_device)) < 0) {
         VIR_DEBUG("Failed to find block device for this LUN");
-        goto out;
+        return retval;
     }
 
-    if (virStorageBackendSCSINewLun(pool,
-                                    host, bus, target, lun,
-                                    block_device) < 0) {
+    retval = virStorageBackendSCSINewLun(pool, host, bus, target, lun,
+                                         block_device);
+    if (retval < 0) {
         VIR_DEBUG("Failed to create new storage volume for %u:%u:%u:%u",
                   host, bus, target, lun);
-        goto out;
+        goto cleanup;
     }
-    retval = 0;
 
     VIR_DEBUG("Created new storage volume for %u:%u:%u:%u successfully",
               host, bus, target, lun);
 
-    VIR_FREE(type_path);
-
- out:
+ cleanup:
     VIR_FREE(block_device);
     return retval;
 }
 
 
-static int
-virStorageBackendSCSIFindLUsInternal(virStoragePoolObjPtr pool,
-                                     uint32_t scanhost,
-                                     bool *found)
+int
+virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
+                              uint32_t scanhost)
 {
     int retval = 0;
     uint32_t bus, target, lun;
@@ -436,6 +466,7 @@ virStorageBackendSCSIFindLUsInternal(virStoragePoolObjPtr pool,
     DIR *devicedir = NULL;
     struct dirent *lun_dirent = NULL;
     char devicepattern[64];
+    int found = 0;
 
     VIR_DEBUG("Discovering LUs on host %u", scanhost);
 
@@ -451,8 +482,9 @@ virStorageBackendSCSIFindLUsInternal(virStoragePoolObjPtr pool,
 
     snprintf(devicepattern, sizeof(devicepattern), "%u:%%u:%%u:%%u\n", scanhost);
 
-    *found = false;
     while ((retval = virDirRead(devicedir, &lun_dirent, device_path)) > 0) {
+        int rc;
+
         if (sscanf(lun_dirent->d_name, devicepattern,
                    &bus, &target, &lun) != 3) {
             continue;
@@ -460,25 +492,25 @@ virStorageBackendSCSIFindLUsInternal(virStoragePoolObjPtr pool,
 
         VIR_DEBUG("Found possible LU '%s'", lun_dirent->d_name);
 
-        if (processLU(pool, scanhost, bus, target, lun) == 0)
-            *found = true;
+        rc = processLU(pool, scanhost, bus, target, lun);
+        if (rc == -1) {
+            retval = -1;
+            break;
+        }
+        if (rc == 0)
+            found++;
     }
-
-    if (!*found)
-        VIR_DEBUG("No LU found for pool %s", pool->def->name);
 
     closedir(devicedir);
 
-    return retval;
+    if (retval < 0)
+        return -1;
+
+    VIR_DEBUG("Found %d LUs for pool %s", found, pool->def->name);
+
+    return found;
 }
 
-int
-virStorageBackendSCSIFindLUs(virStoragePoolObjPtr pool,
-                             uint32_t scanhost)
-{
-    bool found;  /* This path doesn't care whether found or not */
-    return virStorageBackendSCSIFindLUsInternal(pool, scanhost, &found);
-}
 
 static int
 virStorageBackendSCSITriggerRescan(uint32_t host)
@@ -535,7 +567,7 @@ virStoragePoolFCRefreshDataFree(void *opaque)
 {
     virStoragePoolFCRefreshInfoPtr cbdata = opaque;
 
-    VIR_FREE(cbdata->name);
+    VIR_FREE(cbdata->fchost_name);
     VIR_FREE(cbdata);
 }
 
@@ -563,31 +595,35 @@ static void
 virStoragePoolFCRefreshThread(void *opaque)
 {
     virStoragePoolFCRefreshInfoPtr cbdata = opaque;
-    const char *name = cbdata->name;
-    virStoragePoolObjPtr pool = cbdata->pool;
+    const char *fchost_name = cbdata->fchost_name;
+    const unsigned char *pool_uuid = cbdata->pool_uuid;
+    virStoragePoolObjPtr pool = NULL;
     unsigned int host;
-    bool found = false;
+    int found = 0;
     int tries = 2;
 
     do {
         sleep(5); /* Give it time */
 
-        /* Lock the pool, if active, we can get the host number, successfully
-         * rescan, and find LUN's, then we are happy
+        /* Let's see if the pool still exists -  */
+        if (!(pool = virStoragePoolObjFindPoolByUUID(pool_uuid)))
+            break;
+
+        /* Return with pool lock, if active, we can get the host number,
+         * successfully, rescan, and find LUN's, then we are happy
          */
         VIR_DEBUG("Attempt FC Refresh for pool='%s' name='%s' tries='%d'",
-                  pool->def->name, name, tries);
-        virStoragePoolObjLock(pool);
+                  pool->def->name, fchost_name, tries);
         if (virStoragePoolObjIsActive(pool) &&
-            virGetSCSIHostNumber(name, &host) == 0 &&
+            virGetSCSIHostNumber(fchost_name, &host) == 0 &&
             virStorageBackendSCSITriggerRescan(host) == 0) {
             virStoragePoolObjClearVols(pool);
-            virStorageBackendSCSIFindLUsInternal(pool, host, &found);
+            found = virStorageBackendSCSIFindLUs(pool, host);
         }
         virStoragePoolObjUnlock(pool);
     } while (!found && --tries);
 
-    if (!found)
+    if (pool && !found)
         VIR_DEBUG("FC Refresh Thread failed to find LU's");
 
     virStoragePoolFCRefreshDataFree(cbdata);
@@ -768,8 +804,8 @@ createVport(virConnectPtr conn,
     if ((name = virGetFCHostNameByWWN(NULL, adapter->data.fchost.wwnn,
                                       adapter->data.fchost.wwpn))) {
         if (VIR_ALLOC(cbdata) == 0) {
-            cbdata->pool = pool;
-            cbdata->name = name;
+            memcpy(cbdata->pool_uuid, pool->def->uuid, VIR_UUID_BUFLEN);
+            cbdata->fchost_name = name;
             name = NULL;
 
             if (virThreadCreate(&thread, false, virStoragePoolFCRefreshThread,
@@ -844,8 +880,7 @@ deleteVport(virConnectPtr conn,
 
 
 static int
-virStorageBackendSCSICheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
-                               virStoragePoolObjPtr pool,
+virStorageBackendSCSICheckPool(virStoragePoolObjPtr pool,
                                bool *isActive)
 {
     char *path = NULL;
@@ -906,7 +941,8 @@ virStorageBackendSCSIRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
     if (virStorageBackendSCSITriggerRescan(host) < 0)
         goto out;
 
-    virStorageBackendSCSIFindLUs(pool, host);
+    if (virStorageBackendSCSIFindLUs(pool, host) < 0)
+        goto out;
 
     ret = 0;
  out:

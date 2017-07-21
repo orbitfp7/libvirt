@@ -18,43 +18,28 @@
 
 static int
 testCompareXMLToXMLFiles(const char *poolxml, const char *inxml,
-                         const char *outxml)
+                         const char *outxml, unsigned int flags)
 {
-    char *poolXmlData = NULL;
-    char *inXmlData = NULL;
-    char *outXmlData = NULL;
     char *actual = NULL;
     int ret = -1;
     virStoragePoolDefPtr pool = NULL;
     virStorageVolDefPtr dev = NULL;
 
-    if (virtTestLoadFile(poolxml, &poolXmlData) < 0)
-        goto fail;
-    if (virtTestLoadFile(inxml, &inXmlData) < 0)
-        goto fail;
-    if (virtTestLoadFile(outxml, &outXmlData) < 0)
+    if (!(pool = virStoragePoolDefParseFile(poolxml)))
         goto fail;
 
-    if (!(pool = virStoragePoolDefParseString(poolXmlData)))
-        goto fail;
-
-    if (!(dev = virStorageVolDefParseString(pool, inXmlData)))
+    if (!(dev = virStorageVolDefParseFile(pool, inxml, flags)))
         goto fail;
 
     if (!(actual = virStorageVolDefFormat(pool, dev)))
         goto fail;
 
-    if (STRNEQ(outXmlData, actual)) {
-        virtTestDifference(stderr, outXmlData, actual);
+    if (virtTestCompareToFile(actual, outxml) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
-    VIR_FREE(poolXmlData);
-    VIR_FREE(inXmlData);
-    VIR_FREE(outXmlData);
     VIR_FREE(actual);
     virStoragePoolDefFree(pool);
     virStorageVolDefFree(dev);
@@ -64,6 +49,7 @@ testCompareXMLToXMLFiles(const char *poolxml, const char *inxml,
 struct testInfo {
     const char *pool;
     const char *name;
+    unsigned int flags;
 };
 
 static int
@@ -84,7 +70,7 @@ testCompareXMLToXMLHelper(const void *data)
         goto cleanup;
     }
 
-    result = testCompareXMLToXMLFiles(poolxml, inxml, outxml);
+    result = testCompareXMLToXMLFiles(poolxml, inxml, outxml, info->flags);
 
  cleanup:
     VIR_FREE(poolxml);
@@ -100,14 +86,16 @@ mymain(void)
 {
     int ret = 0;
 
-#define DO_TEST(pool, name)                                     \
+#define DO_TEST_FULL(pool, name, flags)                         \
     do {                                                        \
-        struct testInfo info = { pool, name };                  \
+        struct testInfo info = { pool, name, flags };           \
         if (virtTestRun("Storage Vol XML-2-XML " name,          \
                         testCompareXMLToXMLHelper, &info) < 0)  \
             ret = -1;                                           \
     }                                                           \
     while (0);
+
+#define DO_TEST(pool, name) DO_TEST_FULL(pool, name, 0)
 
     DO_TEST("pool-dir", "vol-file");
     DO_TEST("pool-dir", "vol-file-naming");
@@ -123,6 +111,8 @@ mymain(void)
     DO_TEST("pool-sheepdog", "vol-sheepdog");
     DO_TEST("pool-gluster", "vol-gluster-dir");
     DO_TEST("pool-gluster", "vol-gluster-dir-neg-uid");
+    DO_TEST_FULL("pool-dir", "vol-qcow2-nocapacity",
+                 VIR_VOL_XML_PARSE_NO_CAPACITY);
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

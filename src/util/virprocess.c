@@ -36,11 +36,11 @@
 # include <sched.h>
 #endif
 
-#if defined(__FreeBSD__) || HAVE_BSD_CPU_AFFINITY
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || HAVE_BSD_CPU_AFFINITY
 # include <sys/param.h>
 #endif
 
-#ifdef  __FreeBSD__
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
 # include <sys/sysctl.h>
 # include <sys/user.h>
 #endif
@@ -354,7 +354,7 @@ virProcessKillPainfully(pid_t pid, bool force)
     /* This loop sends SIGTERM, then waits a few iterations (10 seconds)
      * to see if it dies. If the process still hasn't exited, and
      * @force is requested, a SIGKILL will be sent, and this will
-     * wait upto 5 seconds more for the process to exit before
+     * wait up to 5 seconds more for the process to exit before
      * returning.
      *
      * Note that setting @force could result in dataloss for the process.
@@ -407,8 +407,7 @@ virProcessKillPainfully(pid_t pid, bool force)
 int virProcessSetAffinity(pid_t pid, virBitmapPtr map)
 {
     size_t i;
-    bool set = false;
-    VIR_DEBUG("Set process affinity on %lld\n", (long long)pid);
+    VIR_DEBUG("Set process affinity on %lld", (long long)pid);
 # ifdef CPU_ALLOC
     /* New method dynamically allocates cpu mask, allowing unlimted cpus */
     int numcpus = 1024;
@@ -433,9 +432,7 @@ int virProcessSetAffinity(pid_t pid, virBitmapPtr map)
 
     CPU_ZERO_S(masklen, mask);
     for (i = 0; i < virBitmapSize(map); i++) {
-        if (virBitmapGetBit(map, i, &set) < 0)
-            return -1;
-        if (set)
+        if (virBitmapIsBitSet(map, i))
             CPU_SET_S(i, masklen, mask);
     }
 
@@ -457,9 +454,7 @@ int virProcessSetAffinity(pid_t pid, virBitmapPtr map)
 
     CPU_ZERO(&mask);
     for (i = 0; i < virBitmapSize(map); i++) {
-        if (virBitmapGetBit(map, i, &set) < 0)
-            return -1;
-        if (set)
+        if (virBitmapIsBitSet(map, i))
             CPU_SET(i, &mask);
     }
 
@@ -473,76 +468,69 @@ int virProcessSetAffinity(pid_t pid, virBitmapPtr map)
     return 0;
 }
 
-int virProcessGetAffinity(pid_t pid,
-                          virBitmapPtr *map,
-                          int maxcpu)
+virBitmapPtr
+virProcessGetAffinity(pid_t pid)
 {
     size_t i;
-# ifdef CPU_ALLOC
-    /* New method dynamically allocates cpu mask, allowing unlimted cpus */
-    int numcpus = 1024;
-    size_t masklen;
     cpu_set_t *mask;
+    size_t masklen;
+    size_t ncpus;
+    virBitmapPtr ret = NULL;
 
-    /* Not only may the statically allocated cpu_set_t be too small,
-     * but there is no way to ask the kernel what size is large enough.
-     * So you have no option but to pick a size, try, catch EINVAL,
-     * enlarge, and re-try.
-     *
-     * http://lkml.org/lkml/2009/7/28/620
-     */
- realloc:
-    masklen = CPU_ALLOC_SIZE(numcpus);
-    mask = CPU_ALLOC(numcpus);
+# ifdef CPU_ALLOC
+    /* 262144 cpus ought to be enough for anyone */
+    ncpus = 1024 << 8;
+    masklen = CPU_ALLOC_SIZE(ncpus);
+    mask = CPU_ALLOC(ncpus);
 
     if (!mask) {
         virReportOOMError();
-        return -1;
+        return NULL;
     }
 
     CPU_ZERO_S(masklen, mask);
-    if (sched_getaffinity(pid, masklen, mask) < 0) {
-        CPU_FREE(mask);
-        if (errno == EINVAL &&
-            numcpus < (1024 << 8)) { /* 262144 cpus ought to be enough for anyone */
-            numcpus = numcpus << 2;
-            goto realloc;
-        }
-        virReportSystemError(errno,
-                             _("cannot get CPU affinity of process %d"), pid);
-        return -1;
-    }
-
-    *map = virBitmapNew(maxcpu);
-    if (!*map)
-        return -1;
-
-    for (i = 0; i < maxcpu; i++)
-        if (CPU_ISSET_S(i, masklen, mask))
-            ignore_value(virBitmapSetBit(*map, i));
-    CPU_FREE(mask);
 # else
-    /* Legacy method uses a fixed size cpu mask, only allows up to 1024 cpus */
-    cpu_set_t mask;
+    ncpus = 1024;
+    if (VIR_ALLOC(mask) < 0)
+        return NULL;
 
-    CPU_ZERO(&mask);
-    if (sched_getaffinity(pid, sizeof(mask), &mask) < 0) {
-        virReportSystemError(errno,
-                             _("cannot get CPU affinity of process %d"), pid);
-        return -1;
-    }
-
-    for (i = 0; i < maxcpu; i++)
-        if (CPU_ISSET(i, &mask))
-            ignore_value(virBitmapSetBit(*map, i));
+    masklen = sizeof(*mask);
+    CPU_ZERO(mask);
 # endif
 
-    return 0;
+    if (sched_getaffinity(pid, masklen, mask) < 0) {
+        virReportSystemError(errno,
+                             _("cannot get CPU affinity of process %d"), pid);
+        goto cleanup;
+    }
+
+    if (!(ret = virBitmapNew(ncpus)))
+          goto cleanup;
+
+    for (i = 0; i < ncpus; i++) {
+# ifdef CPU_ALLOC
+         /* coverity[overrun-local] */
+        if (CPU_ISSET_S(i, masklen, mask))
+            ignore_value(virBitmapSetBit(ret, i));
+# else
+        if (CPU_ISSET(i, mask))
+            ignore_value(virBitmapSetBit(ret, i));
+# endif
+    }
+
+ cleanup:
+# ifdef CPU_ALLOC
+    CPU_FREE(mask);
+# else
+    VIR_FREE(mask);
+# endif
+
+    return ret;
 }
 
 #elif defined(HAVE_BSD_CPU_AFFINITY)
 
-int virProcessSetAffinity(pid_t pid ATTRIBUTE_UNUSED,
+int virProcessSetAffinity(pid_t pid,
                           virBitmapPtr map)
 {
     size_t i;
@@ -567,29 +555,29 @@ int virProcessSetAffinity(pid_t pid ATTRIBUTE_UNUSED,
     return 0;
 }
 
-int virProcessGetAffinity(pid_t pid,
-                          virBitmapPtr *map,
-                          int maxcpu)
+virBitmapPtr
+virProcessGetAffinity(pid_t pid)
 {
     size_t i;
     cpuset_t mask;
-
-    if (!(*map = virBitmapNew(maxcpu)))
-        return -1;
+    virBitmapPtr ret = NULL;
 
     CPU_ZERO(&mask);
     if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, pid,
                            sizeof(mask), &mask) != 0) {
         virReportSystemError(errno,
                              _("cannot get CPU affinity of process %d"), pid);
-        return -1;
+        return NULL;
     }
 
-    for (i = 0; i < maxcpu; i++)
-        if (CPU_ISSET(i, &mask))
-            ignore_value(virBitmapSetBit(*map, i));
+    if (!(ret = virBitmapNew(sizeof(mask) * 8)))
+        return NULL;
 
-    return 0;
+    for (i = 0; i < sizeof(mask) * 8; i++)
+        if (CPU_ISSET(i, &mask))
+            ignore_value(virBitmapSetBit(ret, i));
+
+    return ret;
 }
 
 #else /* HAVE_SCHED_GETAFFINITY */
@@ -602,15 +590,63 @@ int virProcessSetAffinity(pid_t pid ATTRIBUTE_UNUSED,
     return -1;
 }
 
-int virProcessGetAffinity(pid_t pid ATTRIBUTE_UNUSED,
-                          virBitmapPtr *map ATTRIBUTE_UNUSED,
-                          int maxcpu ATTRIBUTE_UNUSED)
+virBitmapPtr
+virProcessGetAffinity(pid_t pid ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Process CPU affinity is not supported on this platform"));
-    return -1;
+    return NULL;
 }
 #endif /* HAVE_SCHED_GETAFFINITY */
+
+
+int virProcessGetPids(pid_t pid, size_t *npids, pid_t **pids)
+{
+    int ret = -1;
+    char *taskPath = NULL;
+    DIR *dir = NULL;
+    int value;
+    struct dirent *ent;
+
+    *npids = 0;
+    *pids = NULL;
+
+    if (virAsprintf(&taskPath, "/proc/%llu/task",
+                    (unsigned long long)pid) < 0)
+        goto cleanup;
+
+    if (!(dir = opendir(taskPath)))
+        goto cleanup;
+
+    while ((value = virDirRead(dir, &ent, taskPath)) > 0) {
+        long long tmp;
+        pid_t tmp_pid;
+
+        /* Skip . and .. */
+        if (STRPREFIX(ent->d_name, "."))
+            continue;
+
+        if (virStrToLong_ll(ent->d_name, NULL, 10, &tmp) < 0)
+            goto cleanup;
+        tmp_pid = tmp;
+
+        if (VIR_APPEND_ELEMENT(*pids, *npids, tmp_pid) < 0)
+            goto cleanup;
+    }
+
+    if (value < 0)
+        goto cleanup;
+
+    ret = 0;
+
+ cleanup:
+    if (dir)
+        closedir(dir);
+    VIR_FREE(taskPath);
+    if (ret < 0)
+        VIR_FREE(*pids);
+    return ret;
+}
 
 
 int virProcessGetNamespaces(pid_t pid,
@@ -633,7 +669,7 @@ int virProcessGetNamespaces(pid_t pid,
                         ns[i]) < 0)
             goto cleanup;
 
-        if ((fd = open(nsfile, O_RDWR)) >= 0) {
+        if ((fd = open(nsfile, O_RDONLY)) >= 0) {
             if (VIR_EXPAND_N(*fdlist, *nfdlist, 1) < 0) {
                 VIR_FORCE_CLOSE(fd);
                 goto cleanup;
@@ -669,6 +705,9 @@ int virProcessSetNamespaces(size_t nfdlist,
         return -1;
     }
     for (i = 0; i < nfdlist; i++) {
+        if (fdlist[i] < 0)
+            continue;
+
         /* We get EINVAL if new NS is same as the current
          * NS, or if the fd namespace doesn't match the
          * type passed to setns()'s second param. Since we
@@ -686,15 +725,19 @@ int virProcessSetNamespaces(size_t nfdlist,
 
 #if HAVE_PRLIMIT
 static int
-virProcessPrLimit(pid_t pid, int resource, struct rlimit *rlim)
+virProcessPrLimit(pid_t pid,
+                  int resource,
+                  const struct rlimit *new_limit,
+                  struct rlimit *old_limit)
 {
-    return prlimit(pid, resource, rlim, NULL);
+    return prlimit(pid, resource, new_limit, old_limit);
 }
 #elif HAVE_SETRLIMIT
 static int
 virProcessPrLimit(pid_t pid ATTRIBUTE_UNUSED,
                   int resource ATTRIBUTE_UNUSED,
-                  struct rlimit *rlim ATTRIBUTE_UNUSED)
+                  const struct rlimit *new_limit ATTRIBUTE_UNUSED,
+                  struct rlimit *old_limit ATTRIBUTE_UNUSED)
 {
     errno = ENOSYS;
     return -1;
@@ -719,7 +762,7 @@ virProcessSetMaxMemLock(pid_t pid, unsigned long long bytes)
             return -1;
         }
     } else {
-        if (virProcessPrLimit(pid, RLIMIT_MEMLOCK, &rlim) < 0) {
+        if (virProcessPrLimit(pid, RLIMIT_MEMLOCK, &rlim, NULL) < 0) {
             virReportSystemError(errno,
                                  _("cannot limit locked memory "
                                    "of process %lld to %llu"),
@@ -727,6 +770,10 @@ virProcessSetMaxMemLock(pid_t pid, unsigned long long bytes)
             return -1;
         }
     }
+
+    VIR_DEBUG("Locked memory for process %lld limited to %llu bytes",
+              (long long int) pid, bytes);
+
     return 0;
 }
 #else /* ! (HAVE_SETRLIMIT && defined(RLIMIT_MEMLOCK)) */
@@ -741,6 +788,51 @@ virProcessSetMaxMemLock(pid_t pid ATTRIBUTE_UNUSED, unsigned long long bytes)
 }
 #endif /* ! (HAVE_SETRLIMIT && defined(RLIMIT_MEMLOCK)) */
 
+#if HAVE_GETRLIMIT && defined(RLIMIT_MEMLOCK)
+int
+virProcessGetMaxMemLock(pid_t pid,
+                        unsigned long long *bytes)
+{
+    struct rlimit rlim;
+
+    if (!bytes)
+        return 0;
+
+    if (pid == 0) {
+        if (getrlimit(RLIMIT_MEMLOCK, &rlim) < 0) {
+            virReportSystemError(errno,
+                                 "%s",
+                                 _("cannot get locked memory limit"));
+            return -1;
+        }
+    } else {
+        if (virProcessPrLimit(pid, RLIMIT_MEMLOCK, NULL, &rlim) < 0) {
+            virReportSystemError(errno,
+                                 _("cannot get locked memory limit "
+                                   "of process %lld"),
+                                 (long long int) pid);
+            return -1;
+        }
+    }
+
+    /* virProcessSetMaxMemLock() sets both rlim_cur and rlim_max to the
+     * same value, so we can retrieve just rlim_max here */
+    *bytes = rlim.rlim_max;
+
+    return 0;
+}
+#else /* ! (HAVE_GETRLIMIT && defined(RLIMIT_MEMLOCK)) */
+int
+virProcessGetMaxMemLock(pid_t pid ATTRIBUTE_UNUSED,
+                        unsigned long long *bytes)
+{
+    if (!bytes)
+        return 0;
+
+    virReportSystemError(ENOSYS, "%s", _("Not supported on this platform"));
+    return -1;
+}
+#endif /* ! (HAVE_GETRLIMIT && defined(RLIMIT_MEMLOCK)) */
 
 #if HAVE_SETRLIMIT && defined(RLIMIT_NPROC)
 int
@@ -760,7 +852,7 @@ virProcessSetMaxProcesses(pid_t pid, unsigned int procs)
             return -1;
         }
     } else {
-        if (virProcessPrLimit(pid, RLIMIT_NPROC, &rlim) < 0) {
+        if (virProcessPrLimit(pid, RLIMIT_NPROC, &rlim, NULL) < 0) {
             virReportSystemError(errno,
                                  _("cannot limit number of subprocesses "
                                    "of process %lld to %u"),
@@ -808,7 +900,7 @@ virProcessSetMaxFiles(pid_t pid, unsigned int files)
             return -1;
         }
     } else {
-        if (virProcessPrLimit(pid, RLIMIT_NOFILE, &rlim) < 0) {
+        if (virProcessPrLimit(pid, RLIMIT_NOFILE, &rlim, NULL) < 0) {
             virReportSystemError(errno,
                                  _("cannot limit number of open files "
                                    "of process %lld to %u"),
@@ -873,7 +965,7 @@ int virProcessGetStartTime(pid_t pid,
 
     tokens = virStringSplit(tmp, " ", 0);
 
-    if (virStringListLength(tokens) < 20) {
+    if (virStringListLength((const char * const *)tokens) < 20) {
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        _("Cannot find start time in %s"),
                        filename);
@@ -898,7 +990,7 @@ int virProcessGetStartTime(pid_t pid,
     VIR_FREE(buf);
     return ret;
 }
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
 int virProcessGetStartTime(pid_t pid,
                            unsigned long long *timestamp)
 {

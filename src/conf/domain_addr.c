@@ -1,7 +1,7 @@
 /*
  * domain_addr.c: helper APIs for managing domain device addresses
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -42,16 +42,27 @@ virDomainPCIAddressFlagsCompatible(virDevicePCIAddressPtr addr,
 {
     virErrorNumber errType = (fromConfig
                               ? VIR_ERR_XML_ERROR : VIR_ERR_INTERNAL_ERROR);
-    virDomainPCIConnectFlags flagsMatchMask = VIR_PCI_CONNECT_TYPES_MASK;
 
-    if (fromConfig)
-       flagsMatchMask |= VIR_PCI_CONNECT_TYPE_EITHER_IF_CONFIG;
+    if (fromConfig) {
+        /* If the requested connection was manually specified in
+         * config, allow a PCI device to connect to a PCIe slot, or
+         * vice versa.
+         */
+        if (busFlags & VIR_PCI_CONNECT_TYPES_ENDPOINT)
+            busFlags |= VIR_PCI_CONNECT_TYPES_ENDPOINT;
+        /* Also allow manual specification of bus to override
+         * libvirt's assumptions about whether or not hotplug
+         * capability will be required.
+         */
+        if (devFlags & VIR_PCI_CONNECT_HOTPLUGGABLE)
+            busFlags |= VIR_PCI_CONNECT_HOTPLUGGABLE;
+    }
 
     /* If this bus doesn't allow the type of connection (PCI
      * vs. PCIe) required by the device, or if the device requires
      * hot-plug and this bus doesn't have it, return false.
      */
-    if (!(devFlags & busFlags & flagsMatchMask)) {
+    if (!(devFlags & busFlags & VIR_PCI_CONNECT_TYPES_MASK)) {
         if (reportError) {
             if (devFlags & VIR_PCI_CONNECT_TYPE_PCI) {
                 virReportError(errType,
@@ -172,10 +183,9 @@ virDomainPCIAddressBusSetModel(virDomainPCIAddressBusPtr bus,
     case VIR_DOMAIN_CONTROLLER_MODEL_PCIE_ROOT:
         /* slots 1 - 31, no hotplug, PCIe only unless the address was
          * specified in user config *and* the particular device being
-         * attached also allows it
+         * attached also allows it.
          */
-        bus->flags = (VIR_PCI_CONNECT_TYPE_PCIE |
-                      VIR_PCI_CONNECT_TYPE_EITHER_IF_CONFIG);
+        bus->flags = VIR_PCI_CONNECT_TYPE_PCIE | VIR_PCI_CONNECT_TYPE_PCIE_ROOT;
         bus->minSlot = 1;
         bus->maxSlot = VIR_PCI_ADDRESS_SLOT_LAST;
         break;
@@ -185,6 +195,24 @@ virDomainPCIAddressBusSetModel(virDomainPCIAddressBusPtr bus,
         bus->flags = VIR_PCI_CONNECT_TYPE_PCI;
         bus->minSlot = 1;
         bus->maxSlot = VIR_PCI_ADDRESS_SLOT_LAST;
+        break;
+    case VIR_DOMAIN_CONTROLLER_MODEL_PCIE_ROOT_PORT:
+    case VIR_DOMAIN_CONTROLLER_MODEL_PCIE_SWITCH_DOWNSTREAM_PORT:
+        /* provides one slot which is pcie, can be used by devices
+         * that must connect to some type of "pcie-*-port", and
+         * is hotpluggable
+         */
+        bus->flags = VIR_PCI_CONNECT_TYPE_PCIE
+           | VIR_PCI_CONNECT_TYPE_PCIE_PORT
+           | VIR_PCI_CONNECT_HOTPLUGGABLE;
+        bus->minSlot = 0;
+        bus->maxSlot = 0;
+        break;
+    case VIR_DOMAIN_CONTROLLER_MODEL_PCIE_SWITCH_UPSTREAM_PORT:
+        /* 31 slots, can only accept pcie-switch-port, no hotplug */
+        bus->flags = VIR_PCI_CONNECT_TYPE_PCIE_SWITCH;
+        bus->minSlot = 0;
+        bus->maxSlot = 31;
         break;
     default:
         virReportError(VIR_ERR_INTERNAL_ERROR,
@@ -461,55 +489,66 @@ virDomainPCIAddressGetNextSlot(virDomainPCIAddressSetPtr addrs,
                                virDomainPCIConnectFlags flags)
 {
     /* default to starting the search for a free slot from
-     * 0000:00:00.0
+     * the first slot of domain 0 bus 0...
      */
     virDevicePCIAddress a = { 0, 0, 0, 0, false };
     char *addrStr = NULL;
-
-    /* except if this search is for the exact same type of device as
-     * last time, continue the search from the previous match
-     */
-    if (flags == addrs->lastFlags)
-        a = addrs->lastaddr;
 
     if (addrs->nbuses == 0) {
         virReportError(VIR_ERR_XML_ERROR, "%s", _("No PCI buses available"));
         goto error;
     }
 
-    /* Start the search at the last used bus and slot */
-    for (a.slot++; a.bus < addrs->nbuses; a.bus++) {
+    /* ...unless this search is for the exact same type of device as
+     * last time, then continue the search from the next slot after
+     * the previous match (the "next slot" may possibly be the first
+     * slot of the next bus).
+     */
+    if (flags == addrs->lastFlags) {
+        a = addrs->lastaddr;
+        if (++a.slot > addrs->buses[a.bus].maxSlot &&
+            ++a.bus < addrs->nbuses)
+            a.slot = addrs->buses[a.bus].minSlot;
+    } else {
+        a.slot = addrs->buses[0].minSlot;
+    }
+
+    while (a.bus < addrs->nbuses) {
+        VIR_FREE(addrStr);
         if (!(addrStr = virDomainPCIAddressAsString(&a)))
             goto error;
         if (!virDomainPCIAddressFlagsCompatible(&a, addrStr,
                                                 addrs->buses[a.bus].flags,
                                                 flags, false, false)) {
-            VIR_FREE(addrStr);
             VIR_DEBUG("PCI bus %.4x:%.2x is not compatible with the device",
                       a.domain, a.bus);
-            continue;
-        }
-        for (; a.slot <= VIR_PCI_ADDRESS_SLOT_LAST; a.slot++) {
-            if (!virDomainPCIAddressSlotInUse(addrs, &a))
-                goto success;
+        } else {
+            while (a.slot <= addrs->buses[a.bus].maxSlot) {
+                if (!virDomainPCIAddressSlotInUse(addrs, &a))
+                    goto success;
 
-            VIR_DEBUG("PCI slot %.4x:%.2x:%.2x already in use",
-                      a.domain, a.bus, a.slot);
+                VIR_DEBUG("PCI slot %.4x:%.2x:%.2x already in use",
+                          a.domain, a.bus, a.slot);
+                a.slot++;
+            }
         }
-        a.slot = 1;
-        VIR_FREE(addrStr);
+        if (++a.bus < addrs->nbuses)
+            a.slot = addrs->buses[a.bus].minSlot;
     }
 
     /* There were no free slots after the last used one */
     if (addrs->dryRun) {
-        /* a is already set to the first new bus and slot 1 */
+        /* a is already set to the first new bus */
         if (virDomainPCIAddressSetGrow(addrs, &a, flags) < 0)
             goto error;
+        /* this device will use the first slot of the new bus */
+        a.slot = addrs->buses[a.bus].minSlot;
         goto success;
     } else if (flags == addrs->lastFlags) {
         /* Check the buses from 0 up to the last used one */
         for (a.bus = 0; a.bus <= addrs->lastaddr.bus; a.bus++) {
-            addrStr = NULL;
+            a.slot = addrs->buses[a.bus].minSlot;
+            VIR_FREE(addrStr);
             if (!(addrStr = virDomainPCIAddressAsString(&a)))
                 goto error;
             if (!virDomainPCIAddressFlagsCompatible(&a, addrStr,
@@ -517,14 +556,15 @@ virDomainPCIAddressGetNextSlot(virDomainPCIAddressSetPtr addrs,
                                                     flags, false, false)) {
                 VIR_DEBUG("PCI bus %.4x:%.2x is not compatible with the device",
                           a.domain, a.bus);
-                continue;
-            }
-            for (a.slot = 1; a.slot <= VIR_PCI_ADDRESS_SLOT_LAST; a.slot++) {
-                if (!virDomainPCIAddressSlotInUse(addrs, &a))
-                    goto success;
+            } else {
+                while (a.slot <= addrs->buses[a.bus].maxSlot) {
+                    if (!virDomainPCIAddressSlotInUse(addrs, &a))
+                        goto success;
 
-                VIR_DEBUG("PCI slot %.4x:%.2x:%.2x already in use",
-                          a.domain, a.bus, a.slot);
+                    VIR_DEBUG("PCI slot %.4x:%.2x:%.2x already in use",
+                              a.domain, a.bus, a.slot);
+                    a.slot++;
+                }
             }
         }
     }
@@ -717,4 +757,419 @@ virDomainCCWAddressSetCreate(void)
  error:
     virDomainCCWAddressSetFree(addrs);
     return NULL;
+}
+
+
+#define VIR_DOMAIN_DEFAULT_VIRTIO_SERIAL_PORTS 31
+
+
+/* virDomainVirtioSerialAddrSetCreate
+ *
+ * Allocates an address set for virtio serial addresses
+ */
+virDomainVirtioSerialAddrSetPtr
+virDomainVirtioSerialAddrSetCreate(void)
+{
+    virDomainVirtioSerialAddrSetPtr ret = NULL;
+
+    if (VIR_ALLOC(ret) < 0)
+        return NULL;
+
+    return ret;
+}
+
+static void
+virDomainVirtioSerialControllerFree(virDomainVirtioSerialControllerPtr cont)
+{
+    if (cont) {
+        virBitmapFree(cont->ports);
+        VIR_FREE(cont);
+    }
+}
+
+static ssize_t
+virDomainVirtioSerialAddrPlaceController(virDomainVirtioSerialAddrSetPtr addrs,
+                                         virDomainVirtioSerialControllerPtr cont)
+{
+    size_t i;
+
+    for (i = 0; i < addrs->ncontrollers; i++) {
+        if (addrs->controllers[i]->idx == cont->idx) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("virtio serial controller with index %u already exists"
+                             " in the address set"),
+                           cont->idx);
+            return -2;
+        }
+        if (addrs->controllers[i]->idx > cont->idx)
+            return i;
+    }
+    return -1;
+}
+
+static ssize_t
+virDomainVirtioSerialAddrFindController(virDomainVirtioSerialAddrSetPtr addrs,
+                                        unsigned int idx)
+{
+    size_t i;
+
+    for (i = 0; i < addrs->ncontrollers; i++) {
+        if (addrs->controllers[i]->idx == idx)
+            return i;
+    }
+    return -1;
+}
+
+/* virDomainVirtioSerialAddrSetAddController
+ *
+ * Adds virtio serial ports of the existing controller
+ * to the address set.
+ */
+static int
+virDomainVirtioSerialAddrSetAddController(virDomainVirtioSerialAddrSetPtr addrs,
+                                          virDomainControllerDefPtr cont)
+{
+    int ret = -1;
+    int ports;
+    virDomainVirtioSerialControllerPtr cnt = NULL;
+    ssize_t insertAt;
+
+    if (cont->type != VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL)
+        return 0;
+
+    ports = cont->opts.vioserial.ports;
+    if (ports == -1)
+        ports = VIR_DOMAIN_DEFAULT_VIRTIO_SERIAL_PORTS;
+
+    VIR_DEBUG("Adding virtio serial controller index %u with %d"
+              " ports to the address set", cont->idx, ports);
+
+    if (VIR_ALLOC(cnt) < 0)
+        goto cleanup;
+
+    if (!(cnt->ports = virBitmapNew(ports)))
+        goto cleanup;
+    cnt->idx = cont->idx;
+
+    if ((insertAt = virDomainVirtioSerialAddrPlaceController(addrs, cnt)) < -1)
+        goto cleanup;
+    if (VIR_INSERT_ELEMENT(addrs->controllers, insertAt,
+                           addrs->ncontrollers, cnt) < 0)
+        goto cleanup;
+
+    ret = 0;
+
+ cleanup:
+    virDomainVirtioSerialControllerFree(cnt);
+    return ret;
+}
+
+/* virDomainVirtioSerialAddrSetAddControllers
+ *
+ * Adds virtio serial ports of controllers present in the domain definition
+ * to the address set.
+ */
+int
+virDomainVirtioSerialAddrSetAddControllers(virDomainVirtioSerialAddrSetPtr addrs,
+                                           virDomainDefPtr def)
+{
+    size_t i;
+
+    for (i = 0; i < def->ncontrollers; i++) {
+        if (virDomainVirtioSerialAddrSetAddController(addrs,
+                                                      def->controllers[i]) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+
+void
+virDomainVirtioSerialAddrSetFree(virDomainVirtioSerialAddrSetPtr addrs)
+{
+    size_t i;
+    if (addrs) {
+        for (i = 0; i < addrs->ncontrollers; i++)
+            virDomainVirtioSerialControllerFree(addrs->controllers[i]);
+        VIR_FREE(addrs->controllers);
+        VIR_FREE(addrs);
+    }
+}
+
+static int
+virDomainVirtioSerialAddrSetAutoaddController(virDomainDefPtr def,
+                                              virDomainVirtioSerialAddrSetPtr addrs,
+                                              unsigned int idx)
+{
+    int contidx;
+
+    if (virDomainDefMaybeAddController(def,
+                                       VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL,
+                                       idx, -1) < 0)
+        return -1;
+
+    contidx = virDomainControllerFind(def, VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL, idx);
+
+    if (virDomainVirtioSerialAddrSetAddController(addrs, def->controllers[contidx]) < 0)
+        return -1;
+
+    return 0;
+}
+
+static int
+virDomainVirtioSerialAddrNext(virDomainDefPtr def,
+                              virDomainVirtioSerialAddrSetPtr addrs,
+                              virDomainDeviceVirtioSerialAddress *addr,
+                              bool allowZero)
+{
+    int ret = -1;
+    ssize_t port, startPort = 0;
+    ssize_t i;
+    unsigned int controller;
+
+    /* port number 0 is reserved for virtconsoles */
+    if (allowZero)
+        startPort = -1;
+
+    if (addrs->ncontrollers == 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("no virtio-serial controllers are available"));
+        goto cleanup;
+    }
+
+    for (i = 0; i < addrs->ncontrollers; i++) {
+        virBitmapPtr map = addrs->controllers[i]->ports;
+        if ((port = virBitmapNextClearBit(map, startPort)) >= 0) {
+            controller = addrs->controllers[i]->idx;
+            goto success;
+        }
+    }
+
+    if (def) {
+        for (i = 0; i < INT_MAX; i++) {
+            int idx = virDomainControllerFind(def, VIR_DOMAIN_CONTROLLER_TYPE_VIRTIO_SERIAL, i);
+
+            if (idx == -1) {
+                if (virDomainVirtioSerialAddrSetAutoaddController(def, addrs, i) < 0)
+                    goto cleanup;
+                controller = i;
+                port = startPort + 1;
+                goto success;
+            }
+        }
+    }
+
+    virReportError(VIR_ERR_XML_ERROR, "%s",
+                   _("Unable to find a free virtio-serial port"));
+
+ cleanup:
+    return ret;
+
+ success:
+    addr->bus = 0;
+    addr->port = port;
+    addr->controller = controller;
+    VIR_DEBUG("Found free virtio serial controller %u port %u", addr->controller,
+              addr->port);
+    ret = 0;
+    goto cleanup;
+}
+
+static int
+virDomainVirtioSerialAddrNextFromController(virDomainVirtioSerialAddrSetPtr addrs,
+                                            virDomainDeviceVirtioSerialAddress *addr)
+{
+    ssize_t port;
+    ssize_t i;
+    virBitmapPtr map;
+
+    i = virDomainVirtioSerialAddrFindController(addrs, addr->controller);
+    if (i < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("virtio-serial controller %u not available"),
+                       addr->controller);
+        return -1;
+    }
+
+    map = addrs->controllers[i]->ports;
+    if ((port = virBitmapNextClearBit(map, 0)) <= 0) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("Unable to find a free port on virtio-serial controller %u"),
+                       addr->controller);
+        return -1;
+    }
+
+    addr->bus = 0;
+    addr->port = port;
+    VIR_DEBUG("Found free virtio serial controller %u port %u", addr->controller,
+              addr->port);
+    return 0;
+}
+
+/* virDomainVirtioSerialAddrAutoAssign
+ *
+ * reserve a virtio serial address of the device (if it has one)
+ * or assign a virtio serial address to the device
+ */
+int
+virDomainVirtioSerialAddrAutoAssign(virDomainDefPtr def,
+                                    virDomainVirtioSerialAddrSetPtr addrs,
+                                    virDomainDeviceInfoPtr info,
+                                    bool allowZero)
+{
+    bool portOnly = info->type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL;
+    if (info->type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
+        info->addr.vioserial.port)
+        return virDomainVirtioSerialAddrReserve(NULL, NULL, info, addrs);
+    else
+        return virDomainVirtioSerialAddrAssign(def, addrs, info, allowZero, portOnly);
+}
+
+
+int
+virDomainVirtioSerialAddrAssign(virDomainDefPtr def,
+                                virDomainVirtioSerialAddrSetPtr addrs,
+                                virDomainDeviceInfoPtr info,
+                                bool allowZero,
+                                bool portOnly)
+{
+    int ret = -1;
+    virDomainDeviceInfo nfo = { NULL };
+    virDomainDeviceInfoPtr ptr = allowZero ? &nfo : info;
+
+    ptr->type = VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL;
+
+    if (portOnly) {
+        if (virDomainVirtioSerialAddrNextFromController(addrs,
+                                                        &ptr->addr.vioserial) < 0)
+            goto cleanup;
+    } else {
+        if (virDomainVirtioSerialAddrNext(def, addrs, &ptr->addr.vioserial,
+                                          allowZero) < 0)
+            goto cleanup;
+    }
+
+    if (virDomainVirtioSerialAddrReserve(NULL, NULL, ptr, addrs) < 0)
+        goto cleanup;
+
+    ret = 0;
+
+ cleanup:
+    return ret;
+}
+
+/* virDomainVirtioSerialAddrIsComplete
+ *
+ * Check if the address is complete, or it needs auto-assignment
+ */
+bool
+virDomainVirtioSerialAddrIsComplete(virDomainDeviceInfoPtr info)
+{
+    return info->type == VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL &&
+        info->addr.vioserial.port != 0;
+}
+
+/* virDomainVirtioSerialAddrReserve
+ *
+ * Reserve the virtio serial address of the device
+ *
+ * For use with virDomainDeviceInfoIterate,
+ * opaque should be the address set
+ */
+int
+virDomainVirtioSerialAddrReserve(virDomainDefPtr def ATTRIBUTE_UNUSED,
+                                 virDomainDeviceDefPtr dev ATTRIBUTE_UNUSED,
+                                 virDomainDeviceInfoPtr info,
+                                 void *data)
+{
+    virDomainVirtioSerialAddrSetPtr addrs = data;
+    char *str = NULL;
+    int ret = -1;
+    virBitmapPtr map = NULL;
+    bool b;
+    ssize_t i;
+
+    if (!virDomainVirtioSerialAddrIsComplete(info))
+        return 0;
+
+    VIR_DEBUG("Reserving virtio serial %u %u", info->addr.vioserial.controller,
+              info->addr.vioserial.port);
+
+    i = virDomainVirtioSerialAddrFindController(addrs, info->addr.vioserial.controller);
+    if (i < 0) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("virtio serial controller %u is missing"),
+                       info->addr.vioserial.controller);
+        goto cleanup;
+    }
+
+    map = addrs->controllers[i]->ports;
+    if (virBitmapGetBit(map, info->addr.vioserial.port, &b) < 0) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("virtio serial controller %u does not have port %u"),
+                       info->addr.vioserial.controller,
+                       info->addr.vioserial.port);
+        goto cleanup;
+    }
+
+    if (b) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("virtio serial port %u on controller %u is already occupied"),
+                       info->addr.vioserial.port,
+                       info->addr.vioserial.controller);
+        goto cleanup;
+    }
+
+    ignore_value(virBitmapSetBit(map, info->addr.vioserial.port));
+
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(str);
+    return ret;
+}
+
+/* virDomainVirtioSerialAddrRelease
+ *
+ * Release the virtio serial address of the device
+ */
+int
+virDomainVirtioSerialAddrRelease(virDomainVirtioSerialAddrSetPtr addrs,
+                                 virDomainDeviceInfoPtr info)
+{
+    virBitmapPtr map;
+    char *str = NULL;
+    int ret = -1;
+    ssize_t i;
+
+    if (info->type != VIR_DOMAIN_DEVICE_ADDRESS_TYPE_VIRTIO_SERIAL ||
+        info->addr.vioserial.port == 0)
+        return 0;
+
+    VIR_DEBUG("Releasing virtio serial %u %u", info->addr.vioserial.controller,
+              info->addr.vioserial.port);
+
+    i = virDomainVirtioSerialAddrFindController(addrs, info->addr.vioserial.controller);
+    if (i < 0) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("virtio serial controller %u is missing"),
+                       info->addr.vioserial.controller);
+        goto cleanup;
+    }
+
+    map = addrs->controllers[i]->ports;
+    if (virBitmapClearBit(map, info->addr.vioserial.port) < 0) {
+        virReportError(VIR_ERR_XML_ERROR,
+                       _("virtio serial controller %u does not have port %u"),
+                       info->addr.vioserial.controller,
+                       info->addr.vioserial.port);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(str);
+    return ret;
 }

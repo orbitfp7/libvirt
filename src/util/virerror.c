@@ -1,7 +1,7 @@
 /*
  * virerror.c: error handling and reporting code for libvirt
  *
- * Copyright (C) 2006, 2008-2014 Red Hat, Inc.
+ * Copyright (C) 2006, 2008-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -132,6 +132,10 @@ VIR_ENUM_IMPL(virErrorDomain, VIR_ERR_DOMAIN_LAST,
               "Firewall",
 
               "Polkit", /* 60 */
+              "Thread jobs",
+              "Admin Interface",
+              "Log Manager",
+              "Xen XL Config",
     )
 
 
@@ -211,6 +215,22 @@ virCopyError(virErrorPtr from,
      */
     return ret;
 }
+
+
+virErrorPtr
+virErrorCopyNew(virErrorPtr err)
+{
+    virErrorPtr ret;
+
+    if (VIR_ALLOC_QUIET(ret) < 0)
+        return NULL;
+
+    if (virCopyError(err, ret) < 0)
+        VIR_FREE(ret);
+
+    return ret;
+}
+
 
 static virErrorPtr
 virLastErrorObject(void)
@@ -459,12 +479,12 @@ virConnCopyLastError(virConnectPtr conn, virErrorPtr to)
 
     if (conn == NULL)
         return -1;
-    virMutexLock(&conn->lock);
+    virObjectLock(conn);
     if (conn->err.code == VIR_ERR_OK)
         virResetError(to);
     else
         virCopyError(&conn->err, to);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
     return to->code;
 }
 
@@ -482,9 +502,9 @@ virConnResetLastError(virConnectPtr conn)
 {
     if (conn == NULL)
         return;
-    virMutexLock(&conn->lock);
+    virObjectLock(conn);
     virResetError(&conn->err);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
 }
 
 /**
@@ -519,10 +539,10 @@ virConnSetErrorFunc(virConnectPtr conn, void *userData,
 {
     if (conn == NULL)
         return;
-    virMutexLock(&conn->lock);
+    virObjectLock(conn);
     conn->handler = handler;
     conn->userData = userData;
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
 }
 
 /**
@@ -599,14 +619,14 @@ virDispatchError(virConnectPtr conn)
 
     /* Copy the global error to per-connection error if needed */
     if (conn) {
-        virMutexLock(&conn->lock);
+        virObjectLock(conn);
         virCopyError(err, &conn->err);
 
         if (conn->handler != NULL) {
             handler = conn->handler;
             userData = conn->userData;
         }
-        virMutexUnlock(&conn->lock);
+        virObjectUnlock(conn);
     }
 
     /* Invoke the error callback functions */
@@ -1325,7 +1345,7 @@ virErrorMsg(virErrorNumber error, const char *info)
             if (info == NULL)
                 errmsg = _("resource busy");
             else
-                errmsg = _("resource busy %s");
+                errmsg = _("resource busy: %s");
             break;
         case VIR_ERR_ACCESS_DENIED:
             if (info == NULL)
@@ -1350,6 +1370,9 @@ virErrorMsg(virErrorNumber error, const char *info)
                 errmsg = _("XML document failed to validate against schema");
             else
                 errmsg = _("XML document failed to validate against schema: %s");
+            break;
+        case VIR_ERR_MIGRATE_FINISH_OK:
+            errmsg = _("migration successfully aborted");
             break;
     }
     return errmsg;

@@ -83,10 +83,15 @@ vmwareDataFreeFunc(void *data)
 }
 
 static int
-vmwareDomainDefPostParse(virDomainDefPtr def ATTRIBUTE_UNUSED,
+vmwareDomainDefPostParse(virDomainDefPtr def,
                          virCapsPtr caps ATTRIBUTE_UNUSED,
+                         unsigned int parseFlags ATTRIBUTE_UNUSED,
                          void *opaque ATTRIBUTE_UNUSED)
 {
+    /* memory hotplug tunables are not supported by this driver */
+    if (virDomainDefCheckUnsupportedMemoryHotplug(def) < 0)
+        return -1;
+
     return 0;
 }
 
@@ -94,6 +99,7 @@ static int
 vmwareDomainDeviceDefPostParse(virDomainDeviceDefPtr dev ATTRIBUTE_UNUSED,
                                const virDomainDef *def ATTRIBUTE_UNUSED,
                                virCapsPtr caps ATTRIBUTE_UNUSED,
+                               unsigned int parseFlags ATTRIBUTE_UNUSED,
                                void *opaque ATTRIBUTE_UNUSED)
 {
     return 0;
@@ -377,11 +383,13 @@ vmwareDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int fla
     if (flags & VIR_DOMAIN_DEFINE_VALIDATE)
         parse_flags |= VIR_DOMAIN_DEF_PARSE_VALIDATE;
 
+    ctx.parseFileName = NULL;
     ctx.formatFileName = vmwareCopyVMXFileName;
+    ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = NULL;
 
     vmwareDriverLock(driver);
     if ((vmdef = virDomainDefParseString(xml, driver->caps, driver->xmlopt,
-                                         1 << VIR_DOMAIN_VIRT_VMWARE,
                                          parse_flags)) == NULL)
         goto cleanup;
 
@@ -668,12 +676,14 @@ vmwareDomainCreateXML(virConnectPtr conn, const char *xml,
     if (flags & VIR_DOMAIN_START_VALIDATE)
         parse_flags |= VIR_DOMAIN_DEF_PARSE_VALIDATE;
 
+    ctx.parseFileName = NULL;
     ctx.formatFileName = vmwareCopyVMXFileName;
+    ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = NULL;
 
     vmwareDriverLock(driver);
 
     if ((vmdef = virDomainDefParseString(xml, driver->caps, driver->xmlopt,
-                                         1 << VIR_DOMAIN_VIRT_VMWARE,
                                          parse_flags)) == NULL)
         goto cleanup;
 
@@ -696,6 +706,7 @@ vmwareDomainCreateXML(virConnectPtr conn, const char *xml,
     if (!(vm = virDomainObjListAdd(driver->domains,
                                    vmdef,
                                    driver->xmlopt,
+                                   VIR_DOMAIN_OBJ_LIST_ADD_LIVE |
                                    VIR_DOMAIN_OBJ_LIST_ADD_CHECK_LIVE,
                                    NULL)))
         goto cleanup;
@@ -708,8 +719,10 @@ vmwareDomainCreateXML(virConnectPtr conn, const char *xml,
     vmdef = NULL;
 
     if (vmwareStartVM(driver, vm) < 0) {
-        virDomainObjListRemove(driver->domains, vm);
-        vm = NULL;
+        if (!vm->persistent) {
+            virDomainObjListRemove(driver->domains, vm);
+            vm = NULL;
+        }
         goto cleanup;
     }
 
@@ -866,7 +879,7 @@ vmwareDomainGetOSType(virDomainPtr dom)
         goto cleanup;
     }
 
-    ignore_value(VIR_STRDUP(ret, vm->def->os.type));
+    ignore_value(VIR_STRDUP(ret, virDomainOSTypeToString(vm->def->os.type)));
 
  cleanup:
     if (vm)
@@ -992,7 +1005,7 @@ vmwareDomainGetXMLDesc(virDomainPtr dom, unsigned int flags)
         goto cleanup;
     }
 
-    ret = virDomainDefFormat(vm->def,
+    ret = virDomainDefFormat(vm->def, driver->caps,
                              virDomainDefFormatConvertXMLFlags(flags));
 
  cleanup:
@@ -1020,11 +1033,15 @@ vmwareConnectDomainXMLFromNative(virConnectPtr conn, const char *nativeFormat,
     }
 
     ctx.parseFileName = vmwareCopyVMXFileName;
+    ctx.formatFileName = NULL;
+    ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = NULL;
 
-    def = virVMXParseConfig(&ctx, driver->xmlopt, nativeConfig);
+    def = virVMXParseConfig(&ctx, driver->xmlopt, driver->caps, nativeConfig);
 
     if (def != NULL)
-        xml = virDomainDefFormat(def, VIR_DOMAIN_DEF_FORMAT_INACTIVE);
+        xml = virDomainDefFormat(def, driver->caps,
+                                 VIR_DOMAIN_DEF_FORMAT_INACTIVE);
 
     virDomainDefFree(def);
 
@@ -1126,9 +1143,9 @@ vmwareDomainGetInfo(virDomainPtr dom, virDomainInfoPtr info)
 
     info->state = virDomainObjGetState(vm, NULL);
     info->cpuTime = 0;
-    info->maxMem = vm->def->mem.max_balloon;
+    info->maxMem = virDomainDefGetMemoryActual(vm->def);
     info->memory = vm->def->mem.cur_balloon;
-    info->nrVirtCpu = vm->def->vcpus;
+    info->nrVirtCpu = virDomainDefGetVcpus(vm->def);
     ret = 0;
 
  cleanup:

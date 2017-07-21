@@ -48,8 +48,6 @@ extern char *progname;
 
 bool virtTestOOMActive(void);
 
-void virtTestResult(const char *name, int ret, const char *msg, ...)
-    ATTRIBUTE_FMT_PRINTF(3,4);
 int virtTestRun(const char *title,
                 int (*body)(const void *data),
                 const void *data);
@@ -69,14 +67,34 @@ int virtTestDifferenceFull(FILE *stream,
                            const char *expectName,
                            const char *actual,
                            const char *actualName);
+int virtTestDifferenceFullNoRegenerate(FILE *stream,
+                                       const char *expect,
+                                       const char *expectName,
+                                       const char *actual,
+                                       const char *actualName);
 int virtTestDifferenceBin(FILE *stream,
                           const char *expect,
                           const char *actual,
                           size_t length);
+int virtTestCompareToFile(const char *strcontent,
+                          const char *filename);
 
 unsigned int virTestGetDebug(void);
 unsigned int virTestGetVerbose(void);
 unsigned int virTestGetExpensive(void);
+unsigned int virTestGetRegenerate(void);
+
+# define VIR_TEST_DEBUG(...)                    \
+    do {                                        \
+        if (virTestGetDebug())                  \
+            fprintf(stderr, __VA_ARGS__);       \
+    } while (0)
+
+# define VIR_TEST_VERBOSE(...)                  \
+    do {                                        \
+        if (virTestGetVerbose())                \
+            fprintf(stderr, __VA_ARGS__);       \
+    } while (0)
 
 char *virtTestLogContentAndReset(void);
 
@@ -118,5 +136,15 @@ int virtTestMain(int argc,
 
 virCapsPtr virTestGenericCapsInit(void);
 virDomainXMLOptionPtr virTestGenericDomainXMLConfInit(void);
+
+typedef int (*testCompareDomXML2XMLPreFormatCallback)(virDomainDefPtr def,
+                                                      const void *opaque);
+int testCompareDomXML2XMLFiles(virCapsPtr caps,
+                               virDomainXMLOptionPtr xmlopt,
+                               const char *inxml,
+                               const char *outfile,
+                               bool live,
+                               testCompareDomXML2XMLPreFormatCallback cb,
+                               const void *opaque);
 
 #endif /* __VIT_TEST_UTILS_H__ */

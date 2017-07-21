@@ -335,20 +335,20 @@ phypCapsInit(void)
      * unexpected failures. We don't want to break the QEMU
      * driver in this scenario, so log errors & carry on
      */
-    if (nodeCapsInitNUMA(caps) < 0) {
+    if (nodeCapsInitNUMA(NULL, caps) < 0) {
         virCapabilitiesFreeNUMAInfo(caps);
         VIR_WARN
             ("Failed to query host NUMA topology, disabling NUMA capabilities");
     }
 
     if ((guest = virCapabilitiesAddGuest(caps,
-                                         "linux",
+                                         VIR_DOMAIN_OSTYPE_LINUX,
                                          caps->host.arch,
                                          NULL, NULL, 0, NULL)) == NULL)
         goto no_memory;
 
-    if (virCapabilitiesAddGuestDomain(guest,
-                                      "phyp", NULL, NULL, 0, NULL) == NULL)
+    if (virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_PHYP,
+                                      NULL, NULL, 0, NULL) == NULL)
         goto no_memory;
 
     return caps;
@@ -1094,10 +1094,15 @@ openSSHSession(virConnectPtr conn, virConnectAuthPtr auth,
 
 
 static int
-phypDomainDefPostParse(virDomainDefPtr def ATTRIBUTE_UNUSED,
+phypDomainDefPostParse(virDomainDefPtr def,
                        virCapsPtr caps ATTRIBUTE_UNUSED,
+                       unsigned int parseFlags ATTRIBUTE_UNUSED,
                        void *opaque ATTRIBUTE_UNUSED)
 {
+    /* memory hotplug tunables are not supported by this driver */
+    if (virDomainDefCheckUnsupportedMemoryHotplug(def) < 0)
+        return -1;
+
     return 0;
 }
 
@@ -1106,6 +1111,7 @@ static int
 phypDomainDeviceDefPostParse(virDomainDeviceDefPtr dev ATTRIBUTE_UNUSED,
                              const virDomainDef *def ATTRIBUTE_UNUSED,
                              virCapsPtr caps ATTRIBUTE_UNUSED,
+                             unsigned int parseFlags ATTRIBUTE_UNUSED,
                              void *opaque ATTRIBUTE_UNUSED)
 {
     return 0;
@@ -1245,9 +1251,8 @@ phypConnectClose(virConnectPtr conn)
     virObjectUnref(phyp_driver->xmlopt);
     phypUUIDTable_Free(phyp_driver->uuid_table);
     VIR_FREE(phyp_driver->managed_system);
-    VIR_FREE(phyp_driver);
-
     VIR_FORCE_CLOSE(phyp_driver->sock);
+    VIR_FREE(phyp_driver);
     return 0;
 }
 
@@ -1708,7 +1713,7 @@ phypDomainAttachDevice(virDomainPtr domain, const char *xml)
     virBuffer buf = VIR_BUFFER_INITIALIZER;
     char *domain_name = NULL;
 
-    if (VIR_ALLOC(def) < 0)
+    if (!(def = virDomainDefNew()))
         goto cleanup;
 
     domain_name = escape_specialcharacters(domain->name);
@@ -1716,8 +1721,7 @@ phypDomainAttachDevice(virDomainPtr domain, const char *xml)
     if (domain_name == NULL)
         goto cleanup;
 
-    if (VIR_STRDUP(def->os.type, "aix") < 0)
-        goto cleanup;
+    def->os.type = VIR_DOMAIN_OSTYPE_LINUX;
 
     dev = virDomainDeviceDefParse(xml, def, phyp_driver->caps, NULL,
                                   VIR_DOMAIN_DEF_PARSE_INACTIVE);
@@ -2026,7 +2030,7 @@ phypStorageVolCreateXML(virStoragePoolPtr pool,
         goto err;
     }
 
-    if ((voldef = virStorageVolDefParseString(spdef, xml)) == NULL) {
+    if ((voldef = virStorageVolDefParseString(spdef, xml, 0)) == NULL) {
         VIR_ERROR(_("Error parsing volume XML."));
         goto err;
     }
@@ -3252,6 +3256,8 @@ phypDomainGetXMLDesc(virDomainPtr dom, unsigned int flags)
     LIBSSH2_SESSION *session = phyp_driver->session;
     virDomainDef def;
     char *managed_system = phyp_driver->managed_system;
+    unsigned long long memory;
+    unsigned int vcpus;
 
     /* Flags checked by virDomainDefFormat */
 
@@ -3273,11 +3279,12 @@ phypDomainGetXMLDesc(virDomainPtr dom, unsigned int flags)
         goto err;
     }
 
-    if ((def.mem.max_balloon =
-         phypGetLparMem(dom->conn, managed_system, dom->id, 0)) == 0) {
+    if ((memory = phypGetLparMem(dom->conn, managed_system, dom->id, 0)) == 0) {
         VIR_ERROR(_("Unable to determine domain's max memory."));
         goto err;
     }
+
+    virDomainDefSetMemoryTotal(&def, memory);
 
     if ((def.mem.cur_balloon =
          phypGetLparMem(dom->conn, managed_system, dom->id, 1)) == 0) {
@@ -3285,13 +3292,18 @@ phypDomainGetXMLDesc(virDomainPtr dom, unsigned int flags)
         goto err;
     }
 
-    if ((def.maxvcpus = def.vcpus =
-         phypGetLparCPU(dom->conn, managed_system, dom->id)) == 0) {
+    if ((vcpus = phypGetLparCPU(dom->conn, managed_system, dom->id)) == 0) {
         VIR_ERROR(_("Unable to determine domain's CPU."));
         goto err;
     }
 
-    return virDomainDefFormat(&def,
+    if (virDomainDefSetVcpusMax(&def, vcpus) < 0)
+        goto err;
+
+    if (virDomainDefSetVcpus(&def, vcpus) < 0)
+        goto err;
+
+    return virDomainDefFormat(&def, phyp_driver->caps,
                               virDomainDefFormatConvertXMLFlags(flags));
 
  err:
@@ -3486,15 +3498,15 @@ phypBuildLpar(virConnectPtr conn, virDomainDefPtr def)
 
     if (!def->mem.cur_balloon) {
         virReportError(VIR_ERR_XML_ERROR, "%s",
-                       _("Field <memory> on the domain XML file is missing or has "
-                         "invalid value."));
+                       _("Field <currentMemory> on the domain XML file is "
+                         "missing or has invalid value"));
         goto cleanup;
     }
 
-    if (!def->mem.max_balloon) {
+    if (!virDomainDefGetMemoryInitial(def)) {
         virReportError(VIR_ERR_XML_ERROR, "%s",
-                       _("Field <currentMemory> on the domain XML file is missing or "
-                         "has invalid value."));
+                       _("Field <memory> on the domain XML file is missing or "
+                         "has invalid value"));
         goto cleanup;
     }
 
@@ -3515,10 +3527,12 @@ phypBuildLpar(virConnectPtr conn, virDomainDefPtr def)
     if (system_type == HMC)
         virBufferAsprintf(&buf, " -m %s", managed_system);
     virBufferAsprintf(&buf, " -r lpar -p %s -i min_mem=%lld,desired_mem=%lld,"
-                      "max_mem=%lld,desired_procs=%d,virtual_scsi_adapters=%s",
+                      "max_mem=%lld,desired_procs=%u,virtual_scsi_adapters=%s",
                       def->name, def->mem.cur_balloon,
-                      def->mem.cur_balloon, def->mem.max_balloon,
-                      (int) def->vcpus, virDomainDiskGetSource(def->disks[0]));
+                      def->mem.cur_balloon,
+                      virDomainDefGetMemoryInitial(def),
+                      virDomainDefGetVcpus(def),
+                      virDomainDiskGetSource(def->disks[0]));
     ret = phypExecBuffer(session, &buf, &exit_status, conn, false);
 
     if (exit_status < 0) {
@@ -3562,7 +3576,6 @@ phypDomainCreateXML(virConnectPtr conn,
 
     if (!(def = virDomainDefParseString(xml, phyp_driver->caps,
                                         phyp_driver->xmlopt,
-                                        1 << VIR_DOMAIN_VIRT_PHYP,
                                         parse_flags)))
         goto err;
 

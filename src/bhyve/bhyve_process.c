@@ -32,6 +32,7 @@
 #include <net/if_tap.h>
 
 #include "bhyve_device.h"
+#include "bhyve_driver.h"
 #include "bhyve_command.h"
 #include "bhyve_monitor.h"
 #include "bhyve_process.h"
@@ -113,12 +114,17 @@ virBhyveProcessStart(virConnectPtr conn,
     virCommandPtr cmd = NULL;
     virCommandPtr load_cmd = NULL;
     bhyveConnPtr privconn = conn->privateData;
+    bhyveDomainObjPrivatePtr priv = vm->privateData;
     int ret = -1, rc;
+    virCapsPtr caps = NULL;
 
     if (virAsprintf(&logfile, "%s/%s.log",
                     BHYVE_LOG_DIR, vm->def->name) < 0)
        return -1;
 
+    caps = bhyveDriverGetCapabilities(privconn);
+    if (!caps)
+        goto cleanup;
 
     if ((logfd = open(logfile, O_WRONLY | O_APPEND | O_CREAT,
                       S_IRUSR | S_IWUSR)) < 0) {
@@ -210,16 +216,17 @@ virBhyveProcessStart(virConnectPtr conn,
 
     vm->def->id = vm->pid;
     virDomainObjSetState(vm, VIR_DOMAIN_RUNNING, reason);
-    vm->privateData = bhyveMonitorOpen(vm, driver);
+    priv->mon = bhyveMonitorOpen(vm, driver);
 
     if (virDomainSaveStatus(driver->xmlopt,
                             BHYVE_STATE_DIR,
-                            vm) < 0)
+                            vm, caps) < 0)
         goto cleanup;
 
     ret = 0;
 
  cleanup:
+    virObjectUnref(caps);
     if (devicemap != NULL) {
         rc = unlink(devmap_file);
         if (rc < 0 && errno != ENOENT)
@@ -257,6 +264,7 @@ virBhyveProcessStop(bhyveConnPtr driver,
 {
     int ret = -1;
     virCommandPtr cmd = NULL;
+    bhyveDomainObjPrivatePtr priv = vm->privateData;
 
     if (!virDomainObjIsActive(vm)) {
         VIR_DEBUG("VM '%s' not active", vm->def->name);
@@ -270,8 +278,8 @@ virBhyveProcessStop(bhyveConnPtr driver,
         return -1;
     }
 
-    if (vm->privateData != NULL)
-        bhyveMonitorClose((bhyveMonitorPtr)vm->privateData);
+    if ((priv != NULL) && (priv->mon != NULL))
+         bhyveMonitorClose(priv->mon);
 
     /* First, try to kill 'bhyve' process */
     if (virProcessKillPainfully(vm->pid, true) != 0)
@@ -358,13 +366,19 @@ virBhyveProcessReconnect(virDomainObjPtr vm,
     int nprocs;
     char **proc_argv;
     char *expected_proctitle = NULL;
+    bhyveDomainObjPrivatePtr priv = vm->privateData;
     int ret = -1;
+    virCapsPtr caps = NULL;
 
     if (!virDomainObjIsActive(vm))
         return 0;
 
     if (!vm->pid)
         return 0;
+
+    caps = bhyveDriverGetCapabilities(data->driver);
+    if (!caps)
+        return -1;
 
     virObjectLock(vm);
 
@@ -379,7 +393,7 @@ virBhyveProcessReconnect(virDomainObjPtr vm,
     if (proc_argv && proc_argv[0]) {
          if (STREQ(expected_proctitle, proc_argv[0])) {
              ret = 0;
-             vm->privateData = bhyveMonitorOpen(vm, data->driver);
+             priv->mon = bhyveMonitorOpen(vm, data->driver);
          }
     }
 
@@ -394,9 +408,10 @@ virBhyveProcessReconnect(virDomainObjPtr vm,
                              VIR_DOMAIN_SHUTOFF_UNKNOWN);
         ignore_value(virDomainSaveStatus(data->driver->xmlopt,
                                          BHYVE_STATE_DIR,
-                                         vm));
+                                         vm, caps));
     }
 
+    virObjectUnref(caps);
     virObjectUnlock(vm);
     VIR_FREE(expected_proctitle);
 

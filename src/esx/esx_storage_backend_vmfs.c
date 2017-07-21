@@ -48,7 +48,7 @@
 VIR_LOG_INIT("esx.esx_storage_backend_vmfs");
 
 /*
- * The UUID of a storage pool is the MD5 sum of it's mount path. Therefore,
+ * The UUID of a storage pool is the MD5 sum of its mount path. Therefore,
  * verify that UUID and MD5 sum match in size, because we rely on that.
  */
 verify(MD5_DIGEST_SIZE == VIR_UUID_BUFLEN);
@@ -864,7 +864,7 @@ esxStorageVolCreateXML(virStoragePoolPtr pool,
     }
 
     /* Parse config */
-    def = virStorageVolDefParseString(&poolDef, xmldesc);
+    def = virStorageVolDefParseString(&poolDef, xmldesc, 0);
 
     if (!def)
         goto cleanup;
@@ -1085,7 +1085,7 @@ esxStorageVolCreateXMLFrom(virStoragePoolPtr pool,
         goto cleanup;
 
     /* Parse config */
-    def = virStorageVolDefParseString(&poolDef, xmldesc);
+    def = virStorageVolDefParseString(&poolDef, xmldesc, 0);
 
     if (!def)
         goto cleanup;

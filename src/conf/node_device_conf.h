@@ -1,7 +1,7 @@
 /*
  * node_device_conf.h: config handling for node devices
  *
- * Copyright (C) 2009-2014 Red Hat, Inc.
+ * Copyright (C) 2009-2015 Red Hat, Inc.
  * Copyright (C) 2008 Virtual Iron Software, Inc.
  * Copyright (C) 2008 David F. Lively
  *
@@ -26,6 +26,7 @@
 # define __VIR_NODE_DEVICE_CONF_H__
 
 # include "internal.h"
+# include "virbitmap.h"
 # include "virutil.h"
 # include "virthread.h"
 # include "virpci.h"
@@ -81,11 +82,9 @@ typedef enum {
     VIR_NODE_DEV_CAP_FLAG_PCIE                      = (1 << 2),
 } virNodeDevPCICapFlags;
 
-typedef struct _virNodeDevCapsDef virNodeDevCapsDef;
-typedef virNodeDevCapsDef *virNodeDevCapsDefPtr;
-struct _virNodeDevCapsDef {
+typedef struct _virNodeDevCapData {
     virNodeDevCapType type;
-    union _virNodeDevCapData {
+    union {
         struct {
             char *product_name;
             struct {
@@ -113,6 +112,7 @@ struct _virNodeDevCapsDef {
             virPCIDeviceAddressPtr physical_function;
             virPCIDeviceAddressPtr *virtual_functions;
             size_t num_virtual_functions;
+            unsigned int max_virtual_functions;
             unsigned int flags;
             virPCIDeviceAddressPtr *iommuGroupDevices;
             size_t nIommuGroupDevices;
@@ -141,6 +141,7 @@ struct _virNodeDevCapsDef {
             char *ifname;
             virInterfaceLink lnk;
             virNodeDevNetCapType subtype;  /* LAST -> no subtype */
+            virBitmapPtr features; /* enum virNetDevFeature */
         } net;
         struct {
             unsigned int host;
@@ -179,7 +180,13 @@ struct _virNodeDevCapsDef {
         struct {
             char *path;
         } sg; /* SCSI generic device */
-    } data;
+    };
+} virNodeDevCapData, *virNodeDevCapDataPtr;
+
+typedef struct _virNodeDevCapsDef virNodeDevCapsDef;
+typedef virNodeDevCapsDef *virNodeDevCapsDefPtr;
+struct _virNodeDevCapsDef {
+    virNodeDevCapData data;
     virNodeDevCapsDefPtr next;          /* next capability */
 };
 

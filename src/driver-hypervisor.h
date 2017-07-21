@@ -1,7 +1,7 @@
 /*
  * driver-hypervisor.h: entry points for hypervisor drivers
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -381,6 +381,28 @@ typedef int
 (*virDrvDomainGetMaxVcpus)(virDomainPtr domain);
 
 typedef int
+(*virDrvDomainGetIOThreadInfo)(virDomainPtr domain,
+                               virDomainIOThreadInfoPtr **info,
+                               unsigned int flags);
+
+typedef int
+(*virDrvDomainPinIOThread)(virDomainPtr domain,
+                           unsigned int iothread_id,
+                           unsigned char *cpumap,
+                           int maplen,
+                           unsigned int flags);
+
+typedef int
+(*virDrvDomainAddIOThread)(virDomainPtr domain,
+                           unsigned int iothread_id,
+                           unsigned int flags);
+
+typedef int
+(*virDrvDomainDelIOThread)(virDomainPtr domain,
+                           unsigned int iothread_id,
+                           unsigned int flags);
+
+typedef int
 (*virDrvDomainGetSecurityLabel)(virDomainPtr domain,
                                 virSecurityLabelPtr seclabel);
 
@@ -616,6 +638,10 @@ typedef int
                                     const char *dom_xml);
 
 typedef int
+(*virDrvDomainMigrateStartPostCopy)(virDomainPtr domain,
+                                    unsigned int flags);
+
+typedef int
 (*virDrvConnectIsEncrypted)(virConnectPtr conn);
 
 typedef int
@@ -626,6 +652,11 @@ typedef int
 
 typedef int
 (*virDrvDomainIsActive)(virDomainPtr dom);
+
+typedef int
+(*virDrvDomainRename)(virDomainPtr dom,
+                      const char *new_name,
+                      unsigned int flags);
 
 typedef int
 (*virDrvDomainIsPersistent)(virDomainPtr dom);
@@ -1173,6 +1204,17 @@ typedef int
                         unsigned int cellCount,
                         unsigned int flags);
 
+typedef int
+(*virDrvDomainInterfaceAddresses)(virDomainPtr dom,
+                                  virDomainInterfacePtr **ifaces,
+                                  unsigned int source,
+                                  unsigned int flags);
+
+typedef int
+(*virDrvDomainSetUserPassword)(virDomainPtr dom,
+                               const char *user,
+                               const char *password,
+                               unsigned int flags);
 
 typedef struct _virHypervisorDriver virHypervisorDriver;
 typedef virHypervisorDriver *virHypervisorDriverPtr;
@@ -1254,6 +1296,10 @@ struct _virHypervisorDriver {
     virDrvDomainGetEmulatorPinInfo domainGetEmulatorPinInfo;
     virDrvDomainGetVcpus domainGetVcpus;
     virDrvDomainGetMaxVcpus domainGetMaxVcpus;
+    virDrvDomainGetIOThreadInfo domainGetIOThreadInfo;
+    virDrvDomainPinIOThread domainPinIOThread;
+    virDrvDomainAddIOThread domainAddIOThread;
+    virDrvDomainDelIOThread domainDelIOThread;
     virDrvDomainGetSecurityLabel domainGetSecurityLabel;
     virDrvDomainGetSecurityLabelList domainGetSecurityLabelList;
     virDrvNodeGetSecurityModel nodeGetSecurityModel;
@@ -1310,6 +1356,7 @@ struct _virHypervisorDriver {
     virDrvConnectIsEncrypted connectIsEncrypted;
     virDrvConnectIsSecure connectIsSecure;
     virDrvDomainIsActive domainIsActive;
+    virDrvDomainRename domainRename;
     virDrvDomainIsPersistent domainIsPersistent;
     virDrvDomainIsUpdated domainIsUpdated;
     virDrvConnectCompareCPU connectCompareCPU;
@@ -1398,6 +1445,9 @@ struct _virHypervisorDriver {
     virDrvConnectGetAllDomainStats connectGetAllDomainStats;
     virDrvNodeAllocPages nodeAllocPages;
     virDrvDomainGetFSInfo domainGetFSInfo;
+    virDrvDomainInterfaceAddresses domainInterfaceAddresses;
+    virDrvDomainSetUserPassword domainSetUserPassword;
+    virDrvDomainMigrateStartPostCopy domainMigrateStartPostCopy;
 };
 
 

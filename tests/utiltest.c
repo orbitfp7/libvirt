@@ -23,6 +23,23 @@ static const char* diskNames[] = {
     "sdia", "sdib", "sdic", "sdid", "sdie", "sdif", "sdig", "sdih", "sdii", "sdij", "sdik", "sdil", "sdim", "sdin", "sdio", "sdip", "sdiq", "sdir", "sdis", "sdit", "sdiu", "sdiv", "sdiw", "sdix", "sdiy", "sdiz"
 };
 
+struct testDiskName
+{
+    const char *name;
+    int idx;
+    int partition;
+};
+
+static struct testDiskName diskNamesPart[] = {
+    {"sda0",          0,           0},
+    {"sdb10",         1,          10},
+    {"sdc2147483647", 2,  2147483647},
+};
+
+static const char* diskNamesInvalid[] = {
+    "sda00", "sda01", "sdb-1"
+};
+
 static int
 testIndexToDiskName(const void *data ATTRIBUTE_UNUSED)
 {
@@ -63,10 +80,8 @@ testDiskNameToIndex(const void *data ATTRIBUTE_UNUSED)
         idx = virDiskNameToIndex(diskName);
 
         if (idx < 0 || idx != i) {
-            if (virTestGetDebug() > 0) {
-                fprintf(stderr, "\nExpect [%zu]\n", i);
-                fprintf(stderr, "Actual [%d]\n", idx);
-            }
+            VIR_TEST_DEBUG("\nExpect [%zu]\n", i);
+            VIR_TEST_DEBUG("Actual [%d]\n", idx);
 
             VIR_FREE(diskName);
 
@@ -75,6 +90,44 @@ testDiskNameToIndex(const void *data ATTRIBUTE_UNUSED)
     }
 
     VIR_FREE(diskName);
+
+    return 0;
+}
+
+
+
+static int
+testDiskNameParse(const void *data ATTRIBUTE_UNUSED)
+{
+    size_t i;
+    int idx;
+    int partition;
+    struct testDiskName *disk = NULL;
+
+    for (i = 0; i < ARRAY_CARDINALITY(diskNamesPart); ++i) {
+        disk = &diskNamesPart[i];
+        if (virDiskNameParse(disk->name, &idx, &partition))
+            return -1;
+
+        if (disk->idx != idx) {
+            VIR_TEST_DEBUG("\nExpect [%d]\n", disk->idx);
+            VIR_TEST_DEBUG("Actual [%d]\n", idx);
+            return -1;
+        }
+
+        if (disk->partition != partition) {
+            VIR_TEST_DEBUG("\nExpect [%d]\n", disk->partition);
+            VIR_TEST_DEBUG("Actual [%d]\n", partition);
+            return -1;
+        }
+    }
+
+    for (i = 0; i < ARRAY_CARDINALITY(diskNamesInvalid); ++i) {
+        if (!virDiskNameParse(diskNamesInvalid[i], &idx, &partition)) {
+            VIR_TEST_DEBUG("Should Fail [%s]\n", diskNamesInvalid[i]);
+            return -1;
+        }
+    }
 
     return 0;
 }
@@ -115,11 +168,9 @@ testParseVersionString(const void *data ATTRIBUTE_UNUSED)
                                        versions[i].allowMissing);
 
         if (result != versions[i].result) {
-            if (virTestGetDebug() > 0) {
-                fprintf(stderr, "\nVersion string [%s]\n", versions[i].string);
-                fprintf(stderr, "Expect result [%d]\n", versions[i].result);
-                fprintf(stderr, "Actual result [%d]\n", result);
-            }
+            VIR_TEST_DEBUG("\nVersion string [%s]\n", versions[i].string);
+            VIR_TEST_DEBUG("Expect result [%d]\n", versions[i].result);
+            VIR_TEST_DEBUG("Actual result [%d]\n", result);
 
             return -1;
         }
@@ -128,11 +179,9 @@ testParseVersionString(const void *data ATTRIBUTE_UNUSED)
             continue;
 
         if (version != versions[i].version) {
-            if (virTestGetDebug() > 0) {
-                fprintf(stderr, "\nVersion string [%s]\n", versions[i].string);
-                fprintf(stderr, "Expect version [%lu]\n", versions[i].version);
-                fprintf(stderr, "Actual version [%lu]\n", version);
-            }
+            VIR_TEST_DEBUG("\nVersion string [%s]\n", versions[i].string);
+            VIR_TEST_DEBUG("Expect version [%lu]\n", versions[i].version);
+            VIR_TEST_DEBUG("Actual version [%lu]\n", version);
 
             return -1;
         }
@@ -166,15 +215,42 @@ testRoundValueToPowerOfTwo(const void *data ATTRIBUTE_UNUSED)
     for (i = 0; i < ARRAY_CARDINALITY(roundData); i++) {
         result = VIR_ROUND_UP_POWER_OF_TWO(roundData[i].input);
         if (roundData[i].output != result) {
-            if (virTestGetDebug() > 0) {
-                fprintf(stderr, "\nInput number [%u]\n", roundData[i].input);
-                fprintf(stderr, "Expected number [%u]\n", roundData[i].output);
-                fprintf(stderr, "Actual number [%u]\n", result);
-            }
+            VIR_TEST_DEBUG("\nInput number [%u]\n", roundData[i].input);
+            VIR_TEST_DEBUG("Expected number [%u]\n", roundData[i].output);
+            VIR_TEST_DEBUG("Actual number [%u]\n", result);
 
             return -1;
         }
     }
+
+    return 0;
+}
+
+
+#define TEST_OVERFLOW(var, val, expect)                                        \
+    tmp = val;                                                                 \
+    if (VIR_ASSIGN_IS_OVERFLOW(var, tmp) != expect) {                          \
+        fprintf(stderr, "\noverflow check failed: "                            \
+                "var: " #var " val: " #val "\n");                              \
+        return -1;                                                             \
+    }
+
+static int
+testOverflowCheckMacro(const void *data ATTRIBUTE_UNUSED)
+{
+    long long tmp;
+    uint8_t luchar;
+    int8_t lchar;
+
+    TEST_OVERFLOW(luchar, 254, false);
+    TEST_OVERFLOW(luchar, 255, false);
+    TEST_OVERFLOW(luchar, 256, true);
+    TEST_OVERFLOW(luchar, 767, true);
+
+    TEST_OVERFLOW(lchar, 127, false);
+    TEST_OVERFLOW(lchar, -128, false);
+    TEST_OVERFLOW(lchar, -129, true);
+    TEST_OVERFLOW(lchar, 128, true);
 
     return 0;
 }
@@ -199,8 +275,10 @@ mymain(void)
 
     DO_TEST(IndexToDiskName);
     DO_TEST(DiskNameToIndex);
+    DO_TEST(DiskNameParse);
     DO_TEST(ParseVersionString);
     DO_TEST(RoundValueToPowerOfTwo);
+    DO_TEST(OverflowCheckMacro);
 
     return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

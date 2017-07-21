@@ -36,13 +36,79 @@
 #include "virstring.h"
 #include "xen_common.h"
 
+#define VIR_FROM_THIS VIR_FROM_XENXM
 
 static int
-xenParseXMDisk(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
+xenParseXMOS(virConfPtr conf, virDomainDefPtr def)
 {
-    const char *str = NULL;
+    size_t i;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        const char *boot;
+
+        if (VIR_ALLOC(def->os.loader) < 0 ||
+            xenConfigCopyString(conf, "kernel", &def->os.loader->path) < 0)
+            return -1;
+
+        if (xenConfigGetString(conf, "boot", &boot, "c") < 0)
+            return -1;
+
+        for (i = 0; i < VIR_DOMAIN_BOOT_LAST && boot[i]; i++) {
+            switch (boot[i]) {
+            case 'a':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_FLOPPY;
+                break;
+            case 'd':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_CDROM;
+                break;
+            case 'n':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_NET;
+                break;
+            case 'c':
+            default:
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_DISK;
+                break;
+            }
+            def->os.nBootDevs++;
+        }
+    } else {
+        const char *extra, *root;
+
+        if (xenConfigCopyStringOpt(conf, "bootloader", &def->os.bootloader) < 0)
+            return -1;
+        if (xenConfigCopyStringOpt(conf, "bootargs", &def->os.bootloaderArgs) < 0)
+            return -1;
+
+        if (xenConfigCopyStringOpt(conf, "kernel", &def->os.kernel) < 0)
+            return -1;
+
+        if (xenConfigCopyStringOpt(conf, "ramdisk", &def->os.initrd) < 0)
+            return -1;
+
+        if (xenConfigGetString(conf, "extra", &extra, NULL) < 0)
+            return -1;
+
+        if (xenConfigGetString(conf, "root", &root, NULL) < 0)
+            return -1;
+
+        if (root) {
+            if (virAsprintf(&def->os.cmdline, "root=%s %s", root, extra) < 0)
+                return -1;
+        } else {
+            if (VIR_STRDUP(def->os.cmdline, extra) < 0)
+                return -1;
+        }
+    }
+
+    return 0;
+}
+
+
+static int
+xenParseXMDisk(virConfPtr conf, virDomainDefPtr def)
+{
     virDomainDiskDefPtr disk = NULL;
-    int hvm = STREQ(def->os.type, "hvm");
+    int hvm = def->os.type == VIR_DOMAIN_OSTYPE_HVM;
     virConfValuePtr list = virConfGetValue(conf, "disk");
 
     if (list && list->type == VIR_CONF_LIST) {
@@ -57,7 +123,7 @@ xenParseXMDisk(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
                 goto skipdisk;
 
             head = list->str;
-            if (!(disk = virDomainDiskDefNew()))
+            if (!(disk = virDomainDiskDefNew(NULL)))
                 return -1;
 
             /*
@@ -205,29 +271,6 @@ xenParseXMDisk(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
         }
     }
 
-    if (hvm && xendConfigVersion == XEND_CONFIG_VERSION_3_0_2) {
-        if (xenConfigGetString(conf, "cdrom", &str, NULL) < 0)
-            goto cleanup;
-        if (str) {
-            if (!(disk = virDomainDiskDefNew()))
-                goto cleanup;
-
-            virDomainDiskSetType(disk, VIR_STORAGE_TYPE_FILE);
-            disk->device = VIR_DOMAIN_DISK_DEVICE_CDROM;
-            if (virDomainDiskSetDriver(disk, "file") < 0)
-                goto cleanup;
-            if (virDomainDiskSetSource(disk, str) < 0)
-                goto cleanup;
-            if (VIR_STRDUP(disk->dst, "hdc") < 0)
-                goto cleanup;
-            disk->bus = VIR_DOMAIN_DISK_BUS_IDE;
-            disk->src->readonly = true;
-
-            if (VIR_APPEND_ELEMENT(def->disks, def->ndisks, disk) < 0)
-                goto cleanup;
-        }
-    }
-
     return 0;
 
  cleanup:
@@ -238,9 +281,7 @@ xenParseXMDisk(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
 
 static int
 xenFormatXMDisk(virConfValuePtr list,
-                virDomainDiskDefPtr disk,
-                int hvm,
-                int xendConfigVersion)
+                virDomainDiskDefPtr disk)
 {
     virBuffer buf = VIR_BUFFER_INITIALIZER;
     virConfValuePtr val, tmp;
@@ -277,8 +318,6 @@ xenFormatXMDisk(virConfValuePtr list,
         virBufferAdd(&buf, src, -1);
     }
     virBufferAddLit(&buf, ",");
-    if (hvm && xendConfigVersion == XEND_CONFIG_VERSION_3_0_2)
-        virBufferAddLit(&buf, "ioemu:");
 
     virBufferAdd(&buf, disk->dst, -1);
     if (disk->device == VIR_DOMAIN_DISK_DEVICE_CDROM)
@@ -321,11 +360,10 @@ xenFormatXMDisk(virConfValuePtr list,
 
 
 static int
-xenFormatXMDisks(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
+xenFormatXMDisks(virConfPtr conf, virDomainDefPtr def)
 {
     virConfValuePtr diskVal = NULL;
     size_t i = 0;
-    int hvm = STREQ(def->os.type, "hvm");
 
     if (VIR_ALLOC(diskVal) < 0)
         goto cleanup;
@@ -334,18 +372,10 @@ xenFormatXMDisks(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
     diskVal->list = NULL;
 
     for (i = 0; i < def->ndisks; i++) {
-        if (xendConfigVersion == XEND_CONFIG_VERSION_3_0_2 &&
-            def->disks[i]->device == VIR_DOMAIN_DISK_DEVICE_CDROM &&
-            def->disks[i]->dst &&
-            STREQ(def->disks[i]->dst, "hdc")) {
-            continue;
-        }
-
         if (def->disks[i]->device == VIR_DOMAIN_DISK_DEVICE_FLOPPY)
             continue;
 
-        if (xenFormatXMDisk(diskVal, def->disks[i],
-                            hvm, xendConfigVersion) < 0)
+        if (xenFormatXMDisk(diskVal, def->disks[i]) < 0)
             goto cleanup;
     }
 
@@ -365,27 +395,69 @@ xenFormatXMDisks(virConfPtr conf, virDomainDefPtr def, int xendConfigVersion)
 }
 
 
+static int
+xenParseXMInputDevs(virConfPtr conf, virDomainDefPtr def)
+{
+    const char *str;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        if (xenConfigGetString(conf, "usbdevice", &str, NULL) < 0)
+            return -1;
+        if (str &&
+                (STREQ(str, "tablet") ||
+                 STREQ(str, "mouse") ||
+                 STREQ(str, "keyboard"))) {
+            virDomainInputDefPtr input;
+            if (VIR_ALLOC(input) < 0)
+                return -1;
+
+            input->bus = VIR_DOMAIN_INPUT_BUS_USB;
+            if (STREQ(str, "mouse"))
+                input->type = VIR_DOMAIN_INPUT_TYPE_MOUSE;
+            else if (STREQ(str, "tablet"))
+                input->type = VIR_DOMAIN_INPUT_TYPE_TABLET;
+            else if (STREQ(str, "keyboard"))
+                input->type = VIR_DOMAIN_INPUT_TYPE_KBD;
+            if (VIR_APPEND_ELEMENT(def->inputs, def->ninputs, input) < 0) {
+                virDomainInputDefFree(input);
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
 /*
  * Convert an XM config record into a virDomainDef object.
  */
 virDomainDefPtr
 xenParseXM(virConfPtr conf,
-           int xendConfigVersion,
-           virCapsPtr caps)
+           virCapsPtr caps,
+           virDomainXMLOptionPtr xmlopt)
 {
     virDomainDefPtr def = NULL;
 
-    if (VIR_ALLOC(def) < 0)
+    if (!(def = virDomainDefNew()))
         return NULL;
 
     def->virtType = VIR_DOMAIN_VIRT_XEN;
     def->id = -1;
 
-    if (xenParseConfigCommon(conf, def, caps, xendConfigVersion) < 0)
+    if (xenParseConfigCommon(conf, def, caps) < 0)
         goto cleanup;
 
-    if (xenParseXMDisk(conf, def, xendConfigVersion) < 0)
+    if (xenParseXMOS(conf, def) < 0)
          goto cleanup;
+
+    if (xenParseXMDisk(conf, def) < 0)
+         goto cleanup;
+
+    if (xenParseXMInputDevs(conf, def) < 0)
+         goto cleanup;
+
+    if (virDomainDefPostParse(def, caps, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
+                              xmlopt) < 0)
+        goto cleanup;
 
     return def;
 
@@ -394,28 +466,136 @@ xenParseXM(virConfPtr conf,
     return NULL;
 }
 
+static int
+xenFormatXMOS(virConfPtr conf, virDomainDefPtr def)
+{
+    size_t i;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        char boot[VIR_DOMAIN_BOOT_LAST+1];
+        if (xenConfigSetString(conf, "builder", "hvm") < 0)
+            return -1;
+
+        if (def->os.loader && def->os.loader->path &&
+            xenConfigSetString(conf, "kernel", def->os.loader->path) < 0)
+            return -1;
+
+        for (i = 0; i < def->os.nBootDevs; i++) {
+            switch (def->os.bootDevs[i]) {
+            case VIR_DOMAIN_BOOT_FLOPPY:
+                boot[i] = 'a';
+                break;
+            case VIR_DOMAIN_BOOT_CDROM:
+                boot[i] = 'd';
+                break;
+            case VIR_DOMAIN_BOOT_NET:
+                boot[i] = 'n';
+                break;
+            case VIR_DOMAIN_BOOT_DISK:
+            default:
+                boot[i] = 'c';
+                break;
+            }
+        }
+
+        if (!def->os.nBootDevs) {
+            boot[0] = 'c';
+            boot[1] = '\0';
+        } else {
+            boot[def->os.nBootDevs] = '\0';
+        }
+
+        if (xenConfigSetString(conf, "boot", boot) < 0)
+            return -1;
+
+        /* XXX floppy disks */
+    } else {
+        if (def->os.bootloader &&
+             xenConfigSetString(conf, "bootloader", def->os.bootloader) < 0)
+            return -1;
+
+         if (def->os.bootloaderArgs &&
+             xenConfigSetString(conf, "bootargs", def->os.bootloaderArgs) < 0)
+            return -1;
+
+         if (def->os.kernel &&
+             xenConfigSetString(conf, "kernel", def->os.kernel) < 0)
+            return -1;
+
+         if (def->os.initrd &&
+             xenConfigSetString(conf, "ramdisk", def->os.initrd) < 0)
+            return -1;
+
+         if (def->os.cmdline &&
+             xenConfigSetString(conf, "extra", def->os.cmdline) < 0)
+            return -1;
+     } /* !hvm */
+
+    return 0;
+}
+
+
+static int
+xenFormatXMInputDevs(virConfPtr conf, virDomainDefPtr def)
+{
+    size_t i;
+    const char *devtype;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        for (i = 0; i < def->ninputs; i++) {
+            if (def->inputs[i]->bus == VIR_DOMAIN_INPUT_BUS_USB) {
+                if (xenConfigSetInt(conf, "usb", 1) < 0)
+                    return -1;
+
+                switch (def->inputs[i]->type) {
+                    case VIR_DOMAIN_INPUT_TYPE_MOUSE:
+                        devtype = "mouse";
+                        break;
+                    case VIR_DOMAIN_INPUT_TYPE_TABLET:
+                        devtype = "tablet";
+                        break;
+                    case VIR_DOMAIN_INPUT_TYPE_KBD:
+                        devtype = "keyboard";
+                        break;
+                    default:
+                        continue;
+                }
+                if (xenConfigSetString(conf, "usbdevice", devtype) < 0)
+                    return -1;
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
 
 /* Computing the vcpu_avail bitmask works because MAX_VIRT_CPUS is
    either 32, or 64 on a platform where long is big enough.  */
 verify(MAX_VIRT_CPUS <= sizeof(1UL) * CHAR_BIT);
 
 /*
- * Convert a virDomainDef object inot an XM config record.
+ * Convert a virDomainDef object into an XM config record.
  */
 virConfPtr
 xenFormatXM(virConnectPtr conn,
-            virDomainDefPtr def,
-            int xendConfigVersion)
+            virDomainDefPtr def)
 {
     virConfPtr conf = NULL;
 
     if (!(conf = virConfNew()))
         goto cleanup;
 
-    if (xenFormatConfigCommon(conf, def, conn, xendConfigVersion) < 0)
+    if (xenFormatConfigCommon(conf, def, conn) < 0)
         goto cleanup;
 
-    if (xenFormatXMDisks(conf, def, xendConfigVersion) < 0)
+    if (xenFormatXMOS(conf, def) < 0)
+        goto cleanup;
+
+    if (xenFormatXMDisks(conf, def) < 0)
+        goto cleanup;
+
+    if (xenFormatXMInputDevs(conf, def) < 0)
         goto cleanup;
 
     return conf;

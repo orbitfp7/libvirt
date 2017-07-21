@@ -58,6 +58,7 @@
 # include "libvirt/libvirt.h"
 # include "libvirt/libvirt-lxc.h"
 # include "libvirt/libvirt-qemu.h"
+# include "libvirt/libvirt-admin.h"
 # include "libvirt/virterror.h"
 
 # include "c-strcase.h"
@@ -327,6 +328,103 @@
         }                                                               \
     } while (0)
 
+/* Macros to help dealing with mutually exclusive flags. */
+
+/**
+ * VIR_EXCLUSIVE_FLAGS_RET:
+ *
+ * @FLAG1: First flag to be checked.
+ * @FLAG2: Second flag to be checked.
+ * @RET: Return value.
+ *
+ * Reject mutually exclusive API flags.  The checked flags are compared
+ * with flags variable.
+ *
+ * This helper does an early return and therefore it has to be called
+ * before anything that would require cleanup.
+ */
+# define VIR_EXCLUSIVE_FLAGS_RET(FLAG1, FLAG2, RET)                         \
+    do {                                                                    \
+        if ((flags & FLAG1) && (flags & FLAG2)) {                           \
+            virReportInvalidArg(ctl,                                        \
+                                _("Flags '%s' and '%s' are mutually "       \
+                                  "exclusive"),                             \
+                                #FLAG1, #FLAG2);                            \
+            return RET;                                                     \
+        }                                                                   \
+    } while (0)
+
+/**
+ * VIR_EXCLUSIVE_FLAGS_GOTO:
+ *
+ * @FLAG1: First flag to be checked.
+ * @FLAG2: Second flag to be checked.
+ * @LABEL: Label to jump to.
+ *
+ * Reject mutually exclusive API flags.  The checked flags are compared
+ * with flags variable.
+ *
+ * Returns nothing.  Jumps to a label if unsupported flags were
+ * passed to it.
+ */
+# define VIR_EXCLUSIVE_FLAGS_GOTO(FLAG1, FLAG2, LABEL)                      \
+    do {                                                                    \
+        if ((flags & FLAG1) && (flags & FLAG2)) {                           \
+            virReportInvalidArg(ctl,                                        \
+                                _("Flags '%s' and '%s' are mutually "       \
+                                  "exclusive"),                             \
+                                #FLAG1, #FLAG2);                            \
+            goto LABEL;                                                     \
+        }                                                                   \
+    } while (0)
+
+/* Macros to help dealing with flag requirements. */
+
+/**
+ * VIR_REQUIRE_FLAG_RET:
+ *
+ * @FLAG1: First flag to be checked.
+ * @FLAG2: Second flag that is required by first flag.
+ * @RET: Return value.
+ *
+ * Check whether required flag is set.  The checked flags are compared
+ * with flags variable.
+ *
+ * This helper does an early return and therefore it has to be called
+ * before anything that would require cleanup.
+ */
+# define VIR_REQUIRE_FLAG_RET(FLAG1, FLAG2, RET)                            \
+    do {                                                                    \
+        if ((flags & FLAG1) && !(flags & FLAG2)) {                          \
+            virReportInvalidArg(ctl,                                        \
+                                _("Flag '%s' is required by flag '%s'"),    \
+                                #FLAG2, #FLAG1);                            \
+            return RET;                                                     \
+        }                                                                   \
+    } while (0)
+
+/**
+ * VIR_REQUIRE_FLAG_GOTO:
+ *
+ * @FLAG1: First flag to be checked.
+ * @FLAG2: Second flag that is required by first flag.
+ * @LABEL: Label to jump to.
+ *
+ * Check whether required flag is set.  The checked flags are compared
+ * with flags variable.
+ *
+ * Returns nothing.  Jumps to a label if required flag is not set.
+ */
+# define VIR_REQUIRE_FLAG_GOTO(FLAG1, FLAG2, LABEL)                         \
+    do {                                                                    \
+        if ((flags & FLAG1) && !(flags & FLAG2)) {                          \
+            virReportInvalidArg(ctl,                                        \
+                                _("Flag '%s' is required by flag '%s'"),    \
+                                #FLAG2, #FLAG1);                            \
+            goto LABEL;                                                     \
+        }                                                                   \
+    } while (0)
+
 # define virCheckNonNullArgReturn(argname, retval)  \
     do {                                            \
         if (argname == NULL) {                      \
@@ -347,6 +445,17 @@
             virReportInvalidNonNullArg(argname);    \
             goto label;                             \
         }                                           \
+    } while (0)
+# define virCheckNonEmptyStringArgGoto(argname, label) \
+    do {                                               \
+        if (argname == NULL) {                         \
+            virReportInvalidNonNullArg(argname);       \
+            goto label;                                \
+        }                                              \
+        if (*argname == '\0') {                        \
+            virReportInvalidEmptyStringArg(argname);   \
+            goto label;                                \
+        }                                              \
     } while (0)
 # define virCheckPositiveArgGoto(argname, label)    \
     do {                                            \

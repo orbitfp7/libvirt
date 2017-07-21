@@ -68,18 +68,18 @@ vmwareCapsInit(void)
                                    false, false)) == NULL)
         goto error;
 
-    if (nodeCapsInitNUMA(caps) < 0)
+    if (nodeCapsInitNUMA(NULL, caps) < 0)
         goto error;
 
     /* i686 guests are always supported */
     if ((guest = virCapabilitiesAddGuest(caps,
-                                         "hvm",
+                                         VIR_DOMAIN_OSTYPE_HVM,
                                          VIR_ARCH_I686,
                                          NULL, NULL, 0, NULL)) == NULL)
         goto error;
 
     if (virCapabilitiesAddGuestDomain(guest,
-                                      "vmware",
+                                      VIR_DOMAIN_VIRT_VMWARE,
                                       NULL, NULL, 0, NULL) == NULL)
         goto error;
 
@@ -105,13 +105,13 @@ vmwareCapsInit(void)
           cpuHasFeature(data, "svm")))) {
 
         if ((guest = virCapabilitiesAddGuest(caps,
-                                             "hvm",
+                                             VIR_DOMAIN_OSTYPE_HVM,
                                              VIR_ARCH_X86_64,
                                              NULL, NULL, 0, NULL)) == NULL)
             goto error;
 
         if (virCapabilitiesAddGuestDomain(guest,
-                                          "vmware",
+                                          VIR_DOMAIN_VIRT_VMWARE,
                                           NULL, NULL, 0, NULL) == NULL)
             goto error;
     }
@@ -145,6 +145,9 @@ vmwareLoadDomains(struct vmware_driver *driver)
     virCommandPtr cmd;
 
     ctx.parseFileName = vmwareCopyVMXFileName;
+    ctx.formatFileName = NULL;
+    ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = NULL;
 
     cmd = virCommandNewArgList(driver->vmrun, "-T",
                                vmwareDriverTypeToString(driver->type),
@@ -163,7 +166,8 @@ vmwareLoadDomains(struct vmware_driver *driver)
             goto cleanup;
 
         if ((vmdef =
-             virVMXParseConfig(&ctx, driver->xmlopt, vmx)) == NULL) {
+             virVMXParseConfig(&ctx, driver->xmlopt,
+                               driver->caps, vmx)) == NULL) {
             goto cleanup;
         }
 

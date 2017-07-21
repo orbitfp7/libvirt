@@ -102,12 +102,12 @@ testReadNetworkConf(const void *data ATTRIBUTE_UNUSED)
         "  </devices>\n"
         "</domain>\n";
 
-    if (VIR_ALLOC(def) < 0 ||
-        VIR_STRDUP(def->os.type, "exe") < 0 ||
+    if (!(def = virDomainDefNew()) ||
         VIR_STRDUP(def->os.init, "/sbin/init") < 0)
         goto cleanup;
 
     def->virtType = VIR_DOMAIN_VIRT_OPENVZ;
+    def->os.type = VIR_DOMAIN_OSTYPE_EXE;
 
     if (openvzReadNetworkConf(def, 1) < 0) {
         err = virGetLastError();
@@ -115,7 +115,7 @@ testReadNetworkConf(const void *data ATTRIBUTE_UNUSED)
         goto cleanup;
     }
 
-    actual = virDomainDefFormat(def, VIR_DOMAIN_DEF_FORMAT_INACTIVE);
+    actual = virDomainDefFormat(def, NULL, VIR_DOMAIN_DEF_FORMAT_INACTIVE);
 
     if (actual == NULL) {
         err = virGetLastError();

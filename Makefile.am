@@ -20,17 +20,9 @@ LCOV = lcov
 GENHTML = genhtml
 
 SUBDIRS = . gnulib/lib include src daemon tools docs gnulib/tests \
-  tests po examples/object-events examples/hellolibvirt \
-  examples/dominfo examples/domsuspend examples/apparmor \
-  examples/xml/nwfilter examples/openauth examples/systemtap \
-  tools/wireshark examples/dommigrate \
-  examples/lxcconvert examples/domtop
+  tests po examples
 
 ACLOCAL_AMFLAGS = -I m4
-
-XML_EXAMPLES = \
-  $(patsubst $(srcdir)/%,%,$(wildcard $(addprefix $(srcdir)/examples/xml/, \
-					test/*.xml storage/*.xml)))
 
 EXTRA_DIST = \
   config-post.h \
@@ -40,13 +32,13 @@ EXTRA_DIST = \
   libvirt.pc.in \
   libvirt-qemu.pc.in \
   libvirt-lxc.pc.in \
+  libvirt-admin.pc.in \
   autobuild.sh \
   Makefile.nonreentrant \
   autogen.sh \
   cfg.mk \
   run.in \
-  AUTHORS.in \
-  $(XML_EXAMPLES)
+  AUTHORS.in
 
 pkgconfigdir = $(libdir)/pkgconfig
 pkgconfig_DATA = libvirt.pc libvirt-qemu.pc libvirt-lxc.pc

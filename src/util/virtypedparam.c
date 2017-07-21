@@ -47,11 +47,19 @@ VIR_ENUM_IMPL(virTypedParameter, VIR_TYPED_PARAM_LAST,
  * internal utility functions (those in libvirt_private.syms) may
  * report errors that the caller will dispatch.  */
 
+static int
+virTypedParamsSortName(const void *left, const void *right)
+{
+    const virTypedParameter *param_left = left, *param_right = right;
+    return strcmp(param_left->field, param_right->field);
+}
+
 /* Validate that PARAMS contains only recognized parameter names with
- * correct types, and with no duplicates.  Pass in as many name/type
- * pairs as appropriate, and pass NULL to end the list of accepted
- * parameters.  Return 0 on success, -1 on failure with error message
- * already issued.  */
+ * correct types, and with no duplicates except for parameters
+ * specified with VIR_TYPED_PARAM_MULTIPLE flag in type.
+ * Pass in as many name/type pairs as appropriate, and pass NULL to end
+ * the list of accepted parameters.  Return 0 on success, -1 on failure
+ * with error message already issued.  */
 int
 virTypedParamsValidate(virTypedParameterPtr params, int nparams, ...)
 {
@@ -60,59 +68,82 @@ virTypedParamsValidate(virTypedParameterPtr params, int nparams, ...)
     size_t i, j;
     const char *name;
     int type;
+    size_t nkeys = 0, nkeysalloc = 0;
+    virTypedParameterPtr sorted = NULL, keys = NULL;
 
     va_start(ap, nparams);
 
-    /* Yes, this is quadratic, but since we reject duplicates and
-     * unknowns, it is constrained by the number of var-args passed
-     * in, which is expected to be small enough to not be
-     * noticeable.  */
-    for (i = 0; i < nparams; i++) {
-        va_end(ap);
-        va_start(ap, nparams);
+    if (VIR_ALLOC_N(sorted, nparams) < 0)
+        goto cleanup;
 
-        name = va_arg(ap, const char *);
-        while (name) {
-            type = va_arg(ap, int);
-            if (STREQ(params[i].field, name)) {
-                if (params[i].type != type) {
-                    const char *badtype;
+    /* Here we intentionally don't copy values */
+    memcpy(sorted, params, sizeof(*params) * nparams);
+    qsort(sorted, nparams, sizeof(*sorted), virTypedParamsSortName);
 
-                    badtype = virTypedParameterTypeToString(params[i].type);
-                    if (!badtype)
-                        badtype = virTypedParameterTypeToString(0);
-                    virReportError(VIR_ERR_INVALID_ARG,
-                                   _("invalid type '%s' for parameter '%s', "
-                                     "expected '%s'"),
-                                   badtype, params[i].field,
-                                   virTypedParameterTypeToString(type));
-                }
-                break;
-            }
-            name = va_arg(ap, const char *);
-        }
-        if (!name) {
-            virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED,
-                           _("parameter '%s' not supported"),
-                           params[i].field);
+    name = va_arg(ap, const char *);
+    while (name) {
+        type = va_arg(ap, int);
+        if (VIR_RESIZE_N(keys, nkeysalloc, nkeys, 1) < 0)
+            goto cleanup;
+
+        if (virStrcpyStatic(keys[nkeys].field, name) == NULL) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Field name '%s' too long"), name);
             goto cleanup;
         }
-        for (j = 0; j < i; j++) {
-            if (STREQ(params[i].field, params[j].field)) {
+
+        keys[nkeys].type = type & ~VIR_TYPED_PARAM_MULTIPLE;
+        /* Value is not used anyway */
+        keys[nkeys].value.i = type & VIR_TYPED_PARAM_MULTIPLE;
+
+        nkeys++;
+        name = va_arg(ap, const char *);
+    }
+
+    qsort(keys, nkeys, sizeof(*keys), virTypedParamsSortName);
+
+    for (i = 0, j = 0; i < nparams && j < nkeys;) {
+        if (STRNEQ(sorted[i].field, keys[j].field)) {
+            j++;
+        } else {
+            if (i > j && !(keys[j].value.i & VIR_TYPED_PARAM_MULTIPLE)) {
                 virReportError(VIR_ERR_INVALID_ARG,
                                _("parameter '%s' occurs multiple times"),
-                               params[i].field);
+                               sorted[i].field);
                 goto cleanup;
             }
+            if (sorted[i].type != keys[j].type) {
+                const char *badtype;
+
+                badtype = virTypedParameterTypeToString(sorted[i].type);
+                if (!badtype)
+                    badtype = virTypedParameterTypeToString(0);
+                virReportError(VIR_ERR_INVALID_ARG,
+                               _("invalid type '%s' for parameter '%s', "
+                                 "expected '%s'"),
+                               badtype, sorted[i].field,
+                               virTypedParameterTypeToString(keys[j].type));
+                goto cleanup;
+            }
+            i++;
         }
+    }
+
+    if (j == nkeys && i != nparams) {
+        virReportError(VIR_ERR_ARGUMENT_UNSUPPORTED,
+                       _("parameter '%s' not supported"),
+                       sorted[i].field);
+        goto cleanup;
     }
 
     ret = 0;
  cleanup:
     va_end(ap);
+    VIR_FREE(sorted);
+    VIR_FREE(keys);
     return ret;
-
 }
+
 
 /* Check if params contains only specified parameter names. Return true if
  * only specified names are present in params, false if params contains any
@@ -451,6 +482,48 @@ virTypedParamsGet(virTypedParameterPtr params,
 }
 
 
+/**
+ * virTypedParamsFilter:
+ * @params: array of typed parameters
+ * @nparams: number of parameters in the @params array
+ * @name: name of the parameter to find
+ * @ret: pointer to the returned array
+ *
+ * Filters @params retaining only the parameters named @name in the
+ * resulting array @ret. Caller should free the @ret array but not
+ * the items since they are pointing to the @params elements.
+ *
+ * Returns amount of elements in @ret on success, -1 on error.
+ */
+int
+virTypedParamsFilter(virTypedParameterPtr params,
+                     int nparams,
+                     const char *name,
+                     virTypedParameterPtr **ret)
+{
+    size_t i, n = 0;
+
+    virCheckNonNullArgGoto(params, error);
+    virCheckNonNullArgGoto(name, error);
+    virCheckNonNullArgGoto(ret, error);
+
+    if (VIR_ALLOC_N(*ret, nparams) < 0)
+        goto error;
+
+    for (i = 0; i < nparams; i++) {
+        if (STREQ(params[i].field, name)) {
+            (*ret)[n] = &params[i];
+            n++;
+        }
+    }
+
+    return n;
+
+ error:
+    return -1;
+}
+
+
 #define VIR_TYPED_PARAM_CHECK_TYPE(check_type)                              \
     do { if (param->type != check_type) {                                   \
         virReportError(VIR_ERR_INVALID_ARG,                                 \
@@ -718,12 +791,61 @@ virTypedParamsGetString(virTypedParameterPtr params,
 }
 
 
-#define VIR_TYPED_PARAM_CHECK()                                     \
-    do { if (virTypedParamsGet(*params, n, name)) {                 \
-        virReportError(VIR_ERR_INVALID_ARG,                         \
-                       _("Parameter '%s' is already set"), name);   \
-        goto error;                                                 \
-    } } while (0)
+/**
+ * virTypedParamsGetStringList:
+ * @params: array of typed parameters
+ * @nparams: number of parameters in the @params array
+ * @name: name of the parameter to find
+ * @values: array of returned values
+ *
+ * Finds all parameters with desired @name within @params and
+ * store their values into @values. The @values array is self
+ * allocated and its length is stored into @picked. When no
+ * longer needed, caller should free the returned array, but not
+ * the items since they are taken from @params array.
+ *
+ * Returns amount of strings in @values array on success,
+ * -1 otherwise.
+ */
+int
+virTypedParamsGetStringList(virTypedParameterPtr params,
+                            int nparams,
+                            const char *name,
+                            const char ***values)
+{
+    size_t i, n;
+    int nfiltered;
+    virTypedParameterPtr *filtered = NULL;
+
+    virResetLastError();
+
+    virCheckNonNullArgGoto(values, error);
+    *values = NULL;
+
+    nfiltered = virTypedParamsFilter(params, nparams, name, &filtered);
+
+    if (nfiltered < 0)
+        goto error;
+
+    if (nfiltered &&
+        VIR_ALLOC_N(*values, nfiltered) < 0)
+        goto error;
+
+    for (n = 0, i = 0; i < nfiltered; i++) {
+        if (filtered[i]->type == VIR_TYPED_PARAM_STRING)
+            (*values)[n++] = filtered[i]->value.s;
+    }
+
+    VIR_FREE(filtered);
+    return n;
+
+ error:
+    if (values)
+        VIR_FREE(*values);
+    VIR_FREE(filtered);
+    virDispatchError(NULL);
+    return -1;
+}
 
 
 /**
@@ -756,7 +878,6 @@ virTypedParamsAddInt(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -804,7 +925,6 @@ virTypedParamsAddUInt(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -852,7 +972,6 @@ virTypedParamsAddLLong(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -900,7 +1019,6 @@ virTypedParamsAddULLong(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -948,7 +1066,6 @@ virTypedParamsAddDouble(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -996,7 +1113,6 @@ virTypedParamsAddBoolean(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -1047,7 +1163,6 @@ virTypedParamsAddString(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -1067,6 +1182,42 @@ virTypedParamsAddString(virTypedParameterPtr *params,
  error:
     virDispatchError(NULL);
     return -1;
+}
+
+/**
+ * virTypedParamsAddStringList:
+ * @params: array of typed parameters
+ * @nparams: number of parameters in the @params array
+ * @maxparams: maximum number of parameters that can be stored in @params
+ *      array without allocating more memory
+ * @name: name of the parameter to store values to
+ * @values: the values to store into the new parameters
+ *
+ * Packs NULL-terminated list of strings @values into @params under the
+ * key @name.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int
+virTypedParamsAddStringList(virTypedParameterPtr *params,
+                            int *nparams,
+                            int *maxparams,
+                            const char *name,
+                            const char **values)
+{
+    size_t i;
+    int rv = -1;
+
+    if (!values)
+        return 0;
+
+    for (i = 0; values[i]; i++) {
+        if ((rv = virTypedParamsAddString(params, nparams, maxparams,
+                                          name, values[i])) < 0)
+            break;
+    }
+
+    return rv;
 }
 
 
@@ -1105,7 +1256,6 @@ virTypedParamsAddFromString(virTypedParameterPtr *params,
 
     virResetLastError();
 
-    VIR_TYPED_PARAM_CHECK();
     if (VIR_RESIZE_N(*params, max, n, 1) < 0)
         goto error;
     *maxparams = max;
@@ -1164,4 +1314,250 @@ virTypedParamsFree(virTypedParameterPtr params,
 {
     virTypedParamsClear(params, nparams);
     VIR_FREE(params);
+}
+
+/**
+ * virTypedParamsRemoteFree:
+ * @remote_params_val: array of typed parameters as specified by
+ *                     (remote|admin)_protocol.h
+ * @remote_params_len: number of parameters in @remote_params_val
+ *
+ * Frees memory used by string representations of parameter identificators,
+ * memory used by string values of parameters and the memory occupied by
+ * @remote_params_val itself.
+ *
+ * Returns nothing.
+ */
+void
+virTypedParamsRemoteFree(virTypedParameterRemotePtr remote_params_val,
+                         unsigned int remote_params_len)
+{
+    size_t i;
+
+    if (!remote_params_val)
+        return;
+
+    for (i = 0; i < remote_params_len; i++) {
+        VIR_FREE(remote_params_val[i].field);
+        if (remote_params_val[i].value.type == VIR_TYPED_PARAM_STRING)
+            VIR_FREE(remote_params_val[i].value.remote_typed_param_value.s);
+    }
+    VIR_FREE(remote_params_val);
+}
+
+
+/**
+ * virTypedParamsDeserialize:
+ * @remote_params: protocol data to be deserialized (obtained from remote side)
+ * @remote_params_len: number of parameters returned in @remote_params
+ * @limit: user specified maximum limit to @remote_params_len
+ * @params: pointer which will hold the deserialized @remote_params data
+ * @nparams: number of entries in @params
+ *
+ * This function will attempt to deserialize protocol-encoded data obtained
+ * from remote side. Two modes of operation are supported, depending on the
+ * caller's design:
+ * 1) Older APIs do not rely on deserializer allocating memory for @params,
+ *    thus calling the deserializer twice, once to find out the actual number of
+ *    parameters for @params to hold, followed by an allocation of @params and
+ *    a second call to the deserializer to actually retrieve the data.
+ * 2) Newer APIs rely completely on the deserializer to allocate the right
+ *    ammount of memory for @params to hold all the data obtained in
+ *    @remote_params.
+ *
+ * If used with model 1, two checks are performed, first one comparing the user
+ * specified limit to the actual size of remote data and the second one
+ * verifying the user allocated amount of memory is indeed capable of holding
+ * remote data @remote_params.
+ * With model 2, only the first check against @limit is performed.
+ *
+ * Returns 0 on success or -1 in case of an error.
+ */
+int
+virTypedParamsDeserialize(virTypedParameterRemotePtr remote_params,
+                          unsigned int remote_params_len,
+                          int limit,
+                          virTypedParameterPtr *params,
+                          int *nparams)
+{
+    size_t i = 0;
+    int rv = -1;
+    bool userAllocated = *params != NULL;
+
+    if (limit && remote_params_len > limit) {
+        virReportError(VIR_ERR_RPC,
+                       _("too many parameters '%u' for limit '%d'"),
+                       remote_params_len, limit);
+        goto cleanup;
+    }
+
+    if (userAllocated) {
+        /* Check the length of the returned list carefully. */
+        if (remote_params_len > *nparams) {
+            virReportError(VIR_ERR_RPC,
+                           _("too many parameters '%u' for nparams '%d'"),
+                           remote_params_len, *nparams);
+            goto cleanup;
+        }
+    } else {
+        if (VIR_ALLOC_N(*params, remote_params_len) < 0)
+            goto cleanup;
+    }
+    *nparams = remote_params_len;
+
+    /* Deserialize the result. */
+    for (i = 0; i < remote_params_len; ++i) {
+        virTypedParameterPtr param = *params + i;
+        virTypedParameterRemotePtr remote_param = remote_params + i;
+
+        if (virStrcpyStatic(param->field,
+                            remote_param->field) == NULL) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("parameter %s too big for destination"),
+                           remote_param->field);
+            goto cleanup;
+        }
+
+        param->type = remote_param->value.type;
+        switch (param->type) {
+        case VIR_TYPED_PARAM_INT:
+            param->value.i =
+                remote_param->value.remote_typed_param_value.i;
+            break;
+        case VIR_TYPED_PARAM_UINT:
+            param->value.ui =
+                remote_param->value.remote_typed_param_value.ui;
+            break;
+        case VIR_TYPED_PARAM_LLONG:
+            param->value.l =
+                remote_param->value.remote_typed_param_value.l;
+            break;
+        case VIR_TYPED_PARAM_ULLONG:
+            param->value.ul =
+                remote_param->value.remote_typed_param_value.ul;
+            break;
+        case VIR_TYPED_PARAM_DOUBLE:
+            param->value.d =
+                remote_param->value.remote_typed_param_value.d;
+            break;
+        case VIR_TYPED_PARAM_BOOLEAN:
+            param->value.b =
+                remote_param->value.remote_typed_param_value.b;
+            break;
+        case VIR_TYPED_PARAM_STRING:
+            if (VIR_STRDUP(param->value.s,
+                           remote_param->value.remote_typed_param_value.s) < 0)
+                goto cleanup;
+            break;
+        default:
+            virReportError(VIR_ERR_RPC, _("unknown parameter type: %d"),
+                           param->type);
+            goto cleanup;
+        }
+    }
+
+    rv = 0;
+
+ cleanup:
+    if (rv < 0) {
+        if (userAllocated) {
+            virTypedParamsClear(*params, i);
+        } else {
+            virTypedParamsFree(*params, i);
+            *params = NULL;
+        }
+    }
+    return rv;
+}
+
+
+/**
+ * virTypedParamsSerialize:
+ * @params: array of parameters to be serialized and later sent to remote side
+ * @nparams: number of elements in @params
+ * @remote_params_val: protocol independent remote representation of @params
+ * @remote_params_len: the final number of elements in @remote_params_val
+ * @flags: bitwise-OR of virTypedParameterFlags
+ *
+ * This method serializes typed parameters provided by @params into
+ * @remote_params_val which is the representation actually being sent.
+ *
+ * Server side using this method also filters out any string parameters that
+ * must not be returned to older clients and handles possibly sparse arrays
+ * returned by some APIs.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int
+virTypedParamsSerialize(virTypedParameterPtr params,
+                        int nparams,
+                        virTypedParameterRemotePtr *remote_params_val,
+                        unsigned int *remote_params_len,
+                        unsigned int flags)
+{
+    size_t i;
+    size_t j;
+    int rv = -1;
+    virTypedParameterRemotePtr params_val;
+
+    *remote_params_len = nparams;
+    if (VIR_ALLOC_N(params_val, nparams) < 0)
+        goto cleanup;
+
+    for (i = 0, j = 0; i < nparams; ++i) {
+        virTypedParameterPtr param = params + i;
+        virTypedParameterRemotePtr val = params_val + j;
+        /* NOTE: Following snippet is relevant to server only, because
+         * virDomainGetCPUStats can return a sparse array; also, we can't pass
+         * back strings to older clients. */
+        if (!param->type ||
+            (!(flags & VIR_TYPED_PARAM_STRING_OKAY) &&
+             param->type == VIR_TYPED_PARAM_STRING)) {
+            --*remote_params_len;
+            continue;
+        }
+
+        /* This will be either freed by virNetServerDispatchCall or call(),
+         * depending on the calling side, i.e. server or client */
+        if (VIR_STRDUP(val->field, param->field) < 0)
+            goto cleanup;
+        val->value.type = param->type;
+        switch (param->type) {
+        case VIR_TYPED_PARAM_INT:
+            val->value.remote_typed_param_value.i = param->value.i;
+            break;
+        case VIR_TYPED_PARAM_UINT:
+            val->value.remote_typed_param_value.ui = param->value.ui;
+            break;
+        case VIR_TYPED_PARAM_LLONG:
+            val->value.remote_typed_param_value.l = param->value.l;
+            break;
+        case VIR_TYPED_PARAM_ULLONG:
+            val->value.remote_typed_param_value.ul = param->value.ul;
+            break;
+        case VIR_TYPED_PARAM_DOUBLE:
+            val->value.remote_typed_param_value.d = param->value.d;
+            break;
+        case VIR_TYPED_PARAM_BOOLEAN:
+            val->value.remote_typed_param_value.b = param->value.b;
+            break;
+        case VIR_TYPED_PARAM_STRING:
+            if (VIR_STRDUP(val->value.remote_typed_param_value.s, param->value.s) < 0)
+                goto cleanup;
+            break;
+        default:
+            virReportError(VIR_ERR_RPC, _("unknown parameter type: %d"),
+                           param->type);
+            goto cleanup;
+        }
+        j++;
+    }
+
+    *remote_params_val = params_val;
+    params_val = NULL;
+    rv = 0;
+
+ cleanup:
+    virTypedParamsRemoteFree(params_val, nparams);
+    return rv;
 }

@@ -30,6 +30,7 @@
 #endif
 
 #include "viralloc.h"
+#include "virthreadjob.h"
 
 
 /* Nothing special required for pthreads */
@@ -163,7 +164,7 @@ int virCondWaitUntil(virCondPtr c, virMutexPtr m, unsigned long long whenms)
     struct timespec ts;
 
     ts.tv_sec = whenms / 1000;
-    ts.tv_nsec = (whenms % 1000) * 1000;
+    ts.tv_nsec = (whenms % 1000) * 1000000;
 
     if ((ret = pthread_cond_timedwait(&c->cond, &m->lock, &ts)) != 0) {
         errno = ret;
@@ -184,6 +185,8 @@ void virCondBroadcast(virCondPtr c)
 
 struct virThreadArgs {
     virThreadFunc func;
+    const char *funcName;
+    bool worker;
     void *opaque;
 };
 
@@ -194,14 +197,26 @@ static void *virThreadHelper(void *data)
 
     /* Free args early, rather than tying it up during the entire thread.  */
     VIR_FREE(args);
+
+    if (local.worker)
+        virThreadJobSetWorker(local.funcName);
+    else
+        virThreadJobSet(local.funcName);
+
     local.func(local.opaque);
+
+    if (!local.worker)
+        virThreadJobClear(0);
+
     return NULL;
 }
 
-int virThreadCreate(virThreadPtr thread,
-                    bool joinable,
-                    virThreadFunc func,
-                    void *opaque)
+int virThreadCreateFull(virThreadPtr thread,
+                        bool joinable,
+                        virThreadFunc func,
+                        const char *funcName,
+                        bool worker,
+                        void *opaque)
 {
     struct virThreadArgs *args;
     pthread_attr_t attr;
@@ -216,6 +231,8 @@ int virThreadCreate(virThreadPtr thread,
     }
 
     args->func = func;
+    args->funcName = funcName;
+    args->worker = worker;
     args->opaque = opaque;
 
     if (!joinable)

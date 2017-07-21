@@ -39,6 +39,7 @@
       <mac address='52:54:00:e5:48:58'/>
       <model type='virtio'/>
       <driver ioeventfd='on' event_idx='on' queues='5'/>
+      <link state='up'/>
     </interface>
     <serial type='pty'>
       <target port='0'/>
@@ -46,6 +47,8 @@
     <console type='pty'>
       <target type='serial' port='0'/>
     </console>
+    <input type='mouse' bus='ps2'/>
+    <input type='keyboard' bus='ps2'/>
     <memballoon model='virtio'/>
   </devices>
 </domain>

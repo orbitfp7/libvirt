@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #if WITH_CAPNG
 # include <cap-ng.h>
@@ -919,17 +920,13 @@ virCommandNewArgs(const char *const*args)
 virCommandPtr
 virCommandNewArgList(const char *binary, ...)
 {
-    virCommandPtr cmd = virCommandNew(binary);
+    virCommandPtr cmd;
     va_list list;
-    const char *arg;
-
-    if (!cmd || cmd->has_error)
-        return cmd;
 
     va_start(list, binary);
-    while ((arg = va_arg(list, const char *)) != NULL)
-        virCommandAddArg(cmd, arg);
+    cmd = virCommandNewVAList(binary, list);
     va_end(list);
+
     return cmd;
 }
 
@@ -1017,6 +1014,30 @@ virCommandPassListenFDs(virCommandPtr cmd)
         return;
 
     cmd->flags |= VIR_EXEC_LISTEN_FDS;
+}
+
+/*
+ * virCommandPassFDGetFDIndex:
+ * @cmd: pointer to virCommand
+ * @fd: FD to get index of
+ *
+ * Determine the index of the FD in the transfer set.
+ *
+ * Returns index >= 0 if @set contains @fd,
+ * -1 otherwise.
+ */
+int
+virCommandPassFDGetFDIndex(virCommandPtr cmd, int fd)
+{
+    size_t i = 0;
+
+    while (i < cmd->npassfd) {
+        if (cmd->passfd[i].fd == fd)
+            return i;
+        i++;
+    }
+
+    return -1;
 }
 
 /**
@@ -2073,7 +2094,7 @@ virCommandProcessIO(virCommandPtr cmd)
                 }
             }
 
-            if (fds[i].revents & (POLLOUT | POLLERR) &&
+            if (fds[i].revents & (POLLOUT | POLLHUP | POLLERR) &&
                 fds[i].fd == cmd->inpipe) {
                 int done;
 
@@ -2869,12 +2890,25 @@ virCommandSetDryRun(virBufferPtr buf,
 }
 
 #ifndef WIN32
-/*
+/**
+ * virCommandRunRegex:
+ * @cmd: command to run
+ * @nregex: number of regexes to apply
+ * @regex: array of regexes to apply
+ * @nvars: array of numbers of variables each regex will produce
+ * @func: callback function that is called for every line of output,
+ * needs to return 0 on success
+ * @data: additional data that will be passed to the callback function
+ * @prefix: prefix that will be skipped at the beginning of each line
+ *
  * Run an external program.
  *
  * Read its output and apply a series of regexes to each line
  * When the entire set of regexes has matched consecutively
- * then run a callback passing in all the matches
+ * then run a callback passing in all the matches on the current line.
+ *
+ * Returns: 0 on success, -1 on memory allocation error, virCommandRun
+ * error or callback function error
  */
 int
 virCommandRunRegex(virCommandPtr cmd,

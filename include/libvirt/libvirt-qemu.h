@@ -40,6 +40,8 @@ typedef enum {
 int virDomainQemuMonitorCommand(virDomainPtr domain, const char *cmd,
                                 char **result, unsigned int flags);
 
+char *virDomainColoLostHeartBeatCmd(virDomainPtr domain);
+
 virDomainPtr virDomainQemuAttach(virConnectPtr domain,
                                  unsigned int pid_value,
                                  unsigned int flags);
@@ -49,6 +51,7 @@ typedef enum {
     VIR_DOMAIN_QEMU_AGENT_COMMAND_BLOCK = -2,
     VIR_DOMAIN_QEMU_AGENT_COMMAND_DEFAULT = -1,
     VIR_DOMAIN_QEMU_AGENT_COMMAND_NOWAIT = 0,
+    VIR_DOMAIN_QEMU_AGENT_COMMAND_SHUTDOWN = 60,
 } virDomainQemuAgentCommandTimeoutValues;
 
 char *virDomainQemuAgentCommand(virDomainPtr domain, const char *cmd,

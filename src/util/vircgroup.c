@@ -1,7 +1,7 @@
 /*
  * vircgroup.c: methods for managing control cgroups
  *
- * Copyright (C) 2010-2014 Red Hat, Inc.
+ * Copyright (C) 2010-2015 Red Hat, Inc.
  * Copyright IBM Corp. 2008
  *
  * This library is free software; you can redistribute it and/or
@@ -24,10 +24,9 @@
 #include <config.h>
 
 #include <stdio.h>
-#if defined HAVE_MNTENT_H && defined HAVE_GETMNTENT_R
+#if defined HAVE_MNTENT_H && defined HAVE_SYS_MOUNT_H \
+    && defined HAVE_GETMNTENT_R
 # include <mntent.h>
-#endif
-#if defined HAVE_SYS_MOUNT_H
 # include <sys/mount.h>
 #endif
 #include <fcntl.h>
@@ -38,6 +37,7 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <dirent.h>
+#include <unistd.h>
 
 #define __VIR_CGROUP_ALLOW_INCLUDE_PRIV_H__
 #include "vircgrouppriv.h"
@@ -243,13 +243,17 @@ static bool
 virCgroupValidateMachineGroup(virCgroupPtr group,
                               const char *name,
                               const char *drivername,
-                              const char *partition,
+                              int id,
+                              bool privileged,
                               bool stripEmulatorSuffix)
 {
     size_t i;
     bool valid = false;
-    char *partname;
-    char *scopename;
+    char *partname = NULL;
+    char *scopename_old = NULL;
+    char *scopename_new = NULL;
+    char *machinename = virSystemdMakeMachineName(drivername, id,
+                                                  name, privileged);
 
     if (virAsprintf(&partname, "%s.libvirt-%s",
                     name, drivername) < 0)
@@ -258,13 +262,21 @@ virCgroupValidateMachineGroup(virCgroupPtr group,
     if (virCgroupPartitionEscape(&partname) < 0)
         goto cleanup;
 
-    if (!partition)
-        partition = "/machine";
-
-    if (!(scopename = virSystemdMakeScopeName(name, drivername, partition)))
+    if (!(scopename_old = virSystemdMakeScopeName(name, drivername, true)))
         goto cleanup;
 
-    if (virCgroupPartitionEscape(&scopename) < 0)
+    /* We should keep trying even if this failed */
+    if (!machinename)
+        virResetLastError();
+    else if (!(scopename_new = virSystemdMakeScopeName(machinename,
+                                                       drivername, false)))
+        goto cleanup;
+
+    if (virCgroupPartitionEscape(&scopename_old) < 0)
+        goto cleanup;
+
+    if (scopename_new &&
+        virCgroupPartitionEscape(&scopename_new) < 0)
         goto cleanup;
 
     for (i = 0; i < VIR_CGROUP_CONTROLLER_LAST; i++) {
@@ -294,12 +306,15 @@ virCgroupValidateMachineGroup(virCgroupPtr group,
         tmp++;
 
         if (STRNEQ(tmp, name) &&
+            STRNEQ_NULLABLE(tmp, machinename) &&
             STRNEQ(tmp, partname) &&
-            STRNEQ(tmp, scopename)) {
+            STRNEQ(tmp, scopename_old) &&
+            STRNEQ_NULLABLE(tmp, scopename_new)) {
             VIR_DEBUG("Name '%s' for controller '%s' does not match "
-                      "'%s', '%s' or '%s'",
+                      "'%s', '%s', '%s', '%s' or '%s'",
                       tmp, virCgroupControllerTypeToString(i),
-                      name, partname, scopename);
+                      name, NULLSTR(machinename), partname,
+                      scopename_old, NULLSTR(scopename_new));
             goto cleanup;
         }
     }
@@ -308,7 +323,9 @@ virCgroupValidateMachineGroup(virCgroupPtr group,
 
  cleanup:
     VIR_FREE(partname);
-    VIR_FREE(scopename);
+    VIR_FREE(scopename_old);
+    VIR_FREE(scopename_new);
+    VIR_FREE(machinename);
     return valid;
 }
 
@@ -338,18 +355,19 @@ virCgroupCopyMounts(virCgroupPtr group,
  * Process /proc/mounts figuring out what controllers are
  * mounted and where
  */
-static int
-virCgroupDetectMounts(virCgroupPtr group)
+int
+virCgroupDetectMountsFromFile(virCgroupPtr group,
+                              const char *path,
+                              bool checkLinks)
 {
     size_t i;
     FILE *mounts = NULL;
     struct mntent entry;
     char buf[CGROUP_MAX_VAL];
 
-    mounts = fopen("/proc/mounts", "r");
+    mounts = fopen(path, "r");
     if (mounts == NULL) {
-        virReportSystemError(errno, "%s",
-                             _("Unable to open /proc/mounts"));
+        virReportSystemError(errno, _("Unable to open %s"), path);
         return -1;
     }
 
@@ -394,7 +412,7 @@ virCgroupDetectMounts(virCgroupPtr group)
 
                     /* If it is a co-mount it has a filename like "cpu,cpuacct"
                      * and we must identify the symlink path */
-                    if (strchr(tmp2 + 1, ',')) {
+                    if (checkLinks && strchr(tmp2 + 1, ',')) {
                         *tmp2 = '\0';
                         if (virAsprintf(&linksrc, "%s/%s",
                                         entry.mnt_dir, typestr) < 0)
@@ -434,6 +452,12 @@ virCgroupDetectMounts(virCgroupPtr group)
  error:
     VIR_FORCE_FCLOSE(mounts);
     return -1;
+}
+
+static int
+virCgroupDetectMounts(virCgroupPtr group)
+{
+    return virCgroupDetectMountsFromFile(group, "/proc/mounts", true);
 }
 
 
@@ -702,6 +726,35 @@ virCgroupDetect(virCgroupPtr group,
 }
 
 
+static char *
+virCgroupGetBlockDevString(const char *path)
+{
+    char *ret = NULL;
+    struct stat sb;
+
+    if (stat(path, &sb) < 0) {
+        virReportSystemError(errno,
+                             _("Path '%s' is not accessible"),
+                             path);
+        return NULL;
+    }
+
+    if (!S_ISBLK(sb.st_mode)) {
+        virReportSystemError(EINVAL,
+                             _("Path '%s' must be a block device"),
+                             path);
+        return NULL;
+    }
+
+    /* Automatically append space after the string since all callers
+     * use it anyway */
+    if (virAsprintf(&ret, "%d:%d ", major(sb.st_rdev), minor(sb.st_rdev)) < 0)
+        return NULL;
+
+    return ret;
+}
+
+
 static int
 virCgroupSetValueStr(virCgroupPtr group,
                      int controller,
@@ -767,6 +820,39 @@ virCgroupGetValueStr(virCgroupPtr group,
 
  cleanup:
     VIR_FREE(keypath);
+    return ret;
+}
+
+
+static int
+virCgroupGetValueForBlkDev(virCgroupPtr group,
+                           int controller,
+                           const char *key,
+                           const char *path,
+                           char **value)
+{
+    char *prefix = NULL;
+    char *str = NULL;
+    char **lines = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueStr(group, controller, key, &str) < 0)
+        goto error;
+
+    if (!(prefix = virCgroupGetBlockDevString(path)))
+        goto error;
+
+    if (!(lines = virStringSplit(str, "\n", -1)))
+        goto error;
+
+    if (VIR_STRDUP(*value, virStringGetFirstWithPrefix(lines, prefix)) < 0)
+        goto error;
+
+    ret = 0;
+ error:
+    VIR_FREE(str);
+    VIR_FREE(prefix);
+    virStringFreeList(lines);
     return ret;
 }
 
@@ -872,6 +958,7 @@ virCgroupCpuSetInherit(virCgroupPtr parent, virCgroupPtr group)
     const char *inherit_values[] = {
         "cpuset.cpus",
         "cpuset.mems",
+        "cpuset.memory_migrate",
     };
 
     VIR_DEBUG("Setting up inheritance %s -> %s", parent->path, group->path);
@@ -1042,8 +1129,8 @@ virCgroupNew(pid_t pid,
              int controllers,
              virCgroupPtr *group)
 {
-    VIR_DEBUG("parent=%p path=%s controllers=%d",
-              parent, path, controllers);
+    VIR_DEBUG("pid=%lld path=%s parent=%p controllers=%d group=%p",
+              (long long) pid, path, parent, controllers, group);
     *group = NULL;
 
     if (VIR_ALLOC((*group)) < 0)
@@ -1282,7 +1369,7 @@ virCgroupSetPartitionSuffix(const char *path, char **res)
  * @controllers: mask of controllers to create
  *
  * Creates a new cgroup to represent the resource
- * partition path identified by @name.
+ * partition path identified by @path.
  *
  * Returns 0 on success, -1 on failure
  */
@@ -1414,106 +1501,45 @@ virCgroupNewDomainPartition(virCgroupPtr partition,
 
 
 /**
- * virCgroupNewVcpu:
+ * virCgroupNewThread:
  *
  * @domain: group for the domain
- * @vcpuid: id of the vcpu
+ * @name: enum to generate the name for the new thread
+ * @id: id of the vcpu or iothread
  * @create: true to create if not already existing
  * @group: Pointer to returned virCgroupPtr
  *
  * Returns 0 on success, or -1 on error
  */
 int
-virCgroupNewVcpu(virCgroupPtr domain,
-                 int vcpuid,
-                 bool create,
-                 virCgroupPtr *group)
+virCgroupNewThread(virCgroupPtr domain,
+                   virCgroupThreadName nameval,
+                   int id,
+                   bool create,
+                   virCgroupPtr *group)
 {
     int ret = -1;
     char *name = NULL;
     int controllers;
 
-    if (virAsprintf(&name, "vcpu%d", vcpuid) < 0)
-        goto cleanup;
-
-    controllers = ((1 << VIR_CGROUP_CONTROLLER_CPU) |
-                   (1 << VIR_CGROUP_CONTROLLER_CPUACCT) |
-                   (1 << VIR_CGROUP_CONTROLLER_CPUSET));
-
-    if (virCgroupNew(-1, name, domain, controllers, group) < 0)
-        goto cleanup;
-
-    if (virCgroupMakeGroup(domain, *group, create, VIR_CGROUP_NONE) < 0) {
-        virCgroupRemove(*group);
-        virCgroupFree(group);
-        goto cleanup;
-    }
-
-    ret = 0;
- cleanup:
-    VIR_FREE(name);
-    return ret;
-}
-
-
-/**
- * virCgroupNewEmulator:
- *
- * @domain: group for the domain
- * @create: true to create if not already existing
- * @group: Pointer to returned virCgroupPtr
- *
- * Returns: 0 on success or -1 on error
- */
-int
-virCgroupNewEmulator(virCgroupPtr domain,
-                     bool create,
-                     virCgroupPtr *group)
-{
-    int ret = -1;
-    int controllers;
-
-    controllers = ((1 << VIR_CGROUP_CONTROLLER_CPU) |
-                   (1 << VIR_CGROUP_CONTROLLER_CPUACCT) |
-                   (1 << VIR_CGROUP_CONTROLLER_CPUSET));
-
-    if (virCgroupNew(-1, "emulator", domain, controllers, group) < 0)
-        goto cleanup;
-
-    if (virCgroupMakeGroup(domain, *group, create, VIR_CGROUP_NONE) < 0) {
-        virCgroupRemove(*group);
-        virCgroupFree(group);
+    switch (nameval) {
+    case VIR_CGROUP_THREAD_VCPU:
+        if (virAsprintf(&name, "vcpu%d", id) < 0)
+            goto cleanup;
+        break;
+    case VIR_CGROUP_THREAD_EMULATOR:
+        if (VIR_STRDUP(name, "emulator") < 0)
+            goto cleanup;
+        break;
+    case VIR_CGROUP_THREAD_IOTHREAD:
+        if (virAsprintf(&name, "iothread%d", id) < 0)
+            goto cleanup;
+        break;
+    case VIR_CGROUP_THREAD_LAST:
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("unexpected name value %d"), nameval);
         goto cleanup;
     }
-
-    ret = 0;
- cleanup:
-    return ret;
-}
-
-
-/**
- * virCgroupNewIOThread:
- *
- * @domain: group for the domain
- * @iothreadid: id of the iothread
- * @create: true to create if not already existing
- * @group: Pointer to returned virCgroupPtr
- *
- * Returns 0 on success, or -1 on error
- */
-int
-virCgroupNewIOThread(virCgroupPtr domain,
-                     int iothreadid,
-                     bool create,
-                     virCgroupPtr *group)
-{
-    int ret = -1;
-    char *name = NULL;
-    int controllers;
-
-    if (virAsprintf(&name, "iothread%d", iothreadid) < 0)
-        goto cleanup;
 
     controllers = ((1 << VIR_CGROUP_CONTROLLER_CPU) |
                    (1 << VIR_CGROUP_CONTROLLER_CPUACCT) |
@@ -1550,8 +1576,9 @@ virCgroupNewDetect(pid_t pid,
 int
 virCgroupNewDetectMachine(const char *name,
                           const char *drivername,
+                          int id,
+                          bool privileged,
                           pid_t pid,
-                          const char *partition,
                           int controllers,
                           virCgroupPtr *group)
 {
@@ -1561,8 +1588,8 @@ virCgroupNewDetectMachine(const char *name,
         return -1;
     }
 
-    if (!virCgroupValidateMachineGroup(*group, name, drivername, partition,
-                                       true)) {
+    if (!virCgroupValidateMachineGroup(*group, name, drivername,
+                                       id, privileged, true)) {
         VIR_DEBUG("Failed to validate machine name for '%s' driver '%s'",
                   name, drivername);
         virCgroupFree(group);
@@ -1579,7 +1606,6 @@ virCgroupNewDetectMachine(const char *name,
 static int
 virCgroupNewMachineSystemd(const char *name,
                            const char *drivername,
-                           bool privileged,
                            const unsigned char *uuid,
                            const char *rootdir,
                            pid_t pidleader,
@@ -1599,7 +1625,6 @@ virCgroupNewMachineSystemd(const char *name,
     VIR_DEBUG("Trying to setup machine '%s' via systemd", name);
     if ((rv = virSystemdCreateMachine(name,
                                       drivername,
-                                      privileged,
                                       uuid,
                                       rootdir,
                                       pidleader,
@@ -1687,11 +1712,9 @@ virCgroupNewMachineSystemd(const char *name,
 /*
  * Returns 0 on success, -1 on fatal error
  */
-int virCgroupTerminateMachine(const char *name,
-                              const char *drivername,
-                              bool privileged)
+int virCgroupTerminateMachine(const char *name)
 {
-    return virSystemdTerminateMachine(name, drivername, privileged);
+    return virSystemdTerminateMachine(name);
 }
 
 
@@ -1746,7 +1769,6 @@ virCgroupNewMachineManual(const char *name,
 int
 virCgroupNewMachine(const char *name,
                     const char *drivername,
-                    bool privileged,
                     const unsigned char *uuid,
                     const char *rootdir,
                     pid_t pidleader,
@@ -1763,7 +1785,6 @@ virCgroupNewMachine(const char *name,
 
     if ((rv = virCgroupNewMachineSystemd(name,
                                          drivername,
-                                         privileged,
                                          uuid,
                                          rootdir,
                                          pidleader,
@@ -2025,7 +2046,6 @@ virCgroupGetBlkioIoDeviceServiced(virCgroupPtr group,
                                   long long *requests_write)
 {
     char *str1 = NULL, *str2 = NULL, *str3 = NULL, *p1, *p2;
-    struct stat sb;
     size_t i;
     int ret = -1;
 
@@ -2042,20 +2062,6 @@ virCgroupGetBlkioIoDeviceServiced(virCgroupPtr group,
         requests_write
     };
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
-        return -1;
-    }
-
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
     if (virCgroupGetValueStr(group,
                              VIR_CGROUP_CONTROLLER_BLKIO,
                              "blkio.throttle.io_service_bytes", &str1) < 0)
@@ -2066,7 +2072,7 @@ virCgroupGetBlkioIoDeviceServiced(virCgroupPtr group,
                              "blkio.throttle.io_serviced", &str2) < 0)
         goto cleanup;
 
-    if (virAsprintf(&str3, "%d:%d ", major(sb.st_rdev), minor(sb.st_rdev)) < 0)
+    if (!(str3 = virCgroupGetBlockDevString(path)))
         goto cleanup;
 
     if (!(p1 = strstr(str1, str3))) {
@@ -2175,33 +2181,22 @@ virCgroupSetBlkioDeviceReadIops(virCgroupPtr group,
                                 const char *path,
                                 unsigned int riops)
 {
-    char *str;
-    struct stat sb;
-    int ret;
+    char *str = NULL;
+    char *blkstr = NULL;
+    int ret = -1;
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
+    if (!(blkstr = virCgroupGetBlockDevString(path)))
         return -1;
-    }
 
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
-    if (virAsprintf(&str, "%d:%d %u", major(sb.st_rdev),
-                    minor(sb.st_rdev), riops) < 0)
-        return -1;
+    if (virAsprintf(&str, "%s%u", blkstr, riops) < 0)
+        goto error;
 
     ret = virCgroupSetValueStr(group,
                                VIR_CGROUP_CONTROLLER_BLKIO,
                                "blkio.throttle.read_iops_device",
                                str);
-
+ error:
+    VIR_FREE(blkstr);
     VIR_FREE(str);
     return ret;
 }
@@ -2220,33 +2215,22 @@ virCgroupSetBlkioDeviceWriteIops(virCgroupPtr group,
                                  const char *path,
                                  unsigned int wiops)
 {
-    char *str;
-    struct stat sb;
-    int ret;
+    char *str = NULL;
+    char *blkstr = NULL;
+    int ret = -1;
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
+    if (!(blkstr = virCgroupGetBlockDevString(path)))
         return -1;
-    }
 
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
-    if (virAsprintf(&str, "%d:%d %u", major(sb.st_rdev),
-                    minor(sb.st_rdev), wiops) < 0)
-        return -1;
+    if (virAsprintf(&str, "%s%u", blkstr, wiops) < 0)
+        goto error;
 
     ret = virCgroupSetValueStr(group,
                                VIR_CGROUP_CONTROLLER_BLKIO,
                                "blkio.throttle.write_iops_device",
                                str);
-
+ error:
+    VIR_FREE(blkstr);
     VIR_FREE(str);
     return ret;
 }
@@ -2265,33 +2249,22 @@ virCgroupSetBlkioDeviceReadBps(virCgroupPtr group,
                                const char *path,
                                unsigned long long rbps)
 {
-    char *str;
-    struct stat sb;
-    int ret;
+    char *str = NULL;
+    char *blkstr = NULL;
+    int ret = -1;
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
+    if (!(blkstr = virCgroupGetBlockDevString(path)))
         return -1;
-    }
 
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
-    if (virAsprintf(&str, "%d:%d %llu", major(sb.st_rdev),
-                    minor(sb.st_rdev), rbps) < 0)
-        return -1;
+    if (virAsprintf(&str, "%s%llu", blkstr, rbps) < 0)
+        goto error;
 
     ret = virCgroupSetValueStr(group,
                                VIR_CGROUP_CONTROLLER_BLKIO,
                                "blkio.throttle.read_bps_device",
                                str);
-
+ error:
+    VIR_FREE(blkstr);
     VIR_FREE(str);
     return ret;
 }
@@ -2309,33 +2282,22 @@ virCgroupSetBlkioDeviceWriteBps(virCgroupPtr group,
                                 const char *path,
                                 unsigned long long wbps)
 {
-    char *str;
-    struct stat sb;
-    int ret;
+    char *str = NULL;
+    char *blkstr = NULL;
+    int ret = -1;
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
+    if (!(blkstr = virCgroupGetBlockDevString(path)))
         return -1;
-    }
 
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
-    if (virAsprintf(&str, "%d:%d %llu", major(sb.st_rdev),
-                    minor(sb.st_rdev), wbps) < 0)
-        return -1;
+    if (virAsprintf(&str, "%s%llu", blkstr, wbps) < 0)
+        goto error;
 
     ret = virCgroupSetValueStr(group,
                                VIR_CGROUP_CONTROLLER_BLKIO,
                                "blkio.throttle.write_bps_device",
                                str);
-
+ error:
+    VIR_FREE(blkstr);
     VIR_FREE(str);
     return ret;
 }
@@ -2348,9 +2310,6 @@ virCgroupSetBlkioDeviceWriteBps(virCgroupPtr group,
  * @weight: The new device weight (100-1000),
  * (10-1000) after kernel 2.6.39, or 0 to clear
  *
- * device_weight is treated as a write-only parameter, so
- * there isn't a getter counterpart.
- *
  * Returns: 0 on success, -1 on error
  */
 int
@@ -2358,32 +2317,212 @@ virCgroupSetBlkioDeviceWeight(virCgroupPtr group,
                               const char *path,
                               unsigned int weight)
 {
-    char *str;
-    struct stat sb;
-    int ret;
+    char *str = NULL;
+    char *blkstr = NULL;
+    int ret = -1;
 
-    if (stat(path, &sb) < 0) {
-        virReportSystemError(errno,
-                             _("Path '%s' is not accessible"),
-                             path);
+    if (!(blkstr = virCgroupGetBlockDevString(path)))
         return -1;
-    }
 
-    if (!S_ISBLK(sb.st_mode)) {
-        virReportSystemError(EINVAL,
-                             _("Path '%s' must be a block device"),
-                             path);
-        return -1;
-    }
-
-    if (virAsprintf(&str, "%d:%d %d", major(sb.st_rdev), minor(sb.st_rdev),
-                    weight) < 0)
-        return -1;
+    if (virAsprintf(&str, "%s%d", blkstr, weight) < 0)
+        goto error;
 
     ret = virCgroupSetValueStr(group,
                                VIR_CGROUP_CONTROLLER_BLKIO,
                                "blkio.weight_device",
                                str);
+ error:
+    VIR_FREE(blkstr);
+    VIR_FREE(str);
+    return ret;
+}
+
+/**
+ * virCgroupGetBlkioDeviceReadIops:
+ * @group: The cgroup to gather block io setting for
+ * @path: The path of device
+ * @riops: Returned device read iops throttle, 0 if there is none
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int
+virCgroupGetBlkioDeviceReadIops(virCgroupPtr group,
+                                const char *path,
+                                unsigned int *riops)
+{
+    char *str = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueForBlkDev(group,
+                                   VIR_CGROUP_CONTROLLER_BLKIO,
+                                   "blkio.throttle.read_iops_device",
+                                   path,
+                                   &str) < 0)
+        goto error;
+
+    if (!str) {
+        *riops = 0;
+    } else if (virStrToLong_ui(str, NULL, 10, riops) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to parse '%s' as an integer"),
+                       str);
+        goto error;
+    }
+
+    ret = 0;
+ error:
+    VIR_FREE(str);
+    return ret;
+}
+
+/**
+ * virCgroupGetBlkioDeviceWriteIops:
+ * @group: The cgroup to gather block io setting for
+ * @path: The path of device
+ * @wiops: Returned device write iops throttle, 0 if there is none
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int
+virCgroupGetBlkioDeviceWriteIops(virCgroupPtr group,
+                                 const char *path,
+                                 unsigned int *wiops)
+{
+    char *str = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueForBlkDev(group,
+                                   VIR_CGROUP_CONTROLLER_BLKIO,
+                                   "blkio.throttle.write_iops_device",
+                                   path,
+                                   &str) < 0)
+        goto error;
+
+    if (!str) {
+        *wiops = 0;
+    } else if (virStrToLong_ui(str, NULL, 10, wiops) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to parse '%s' as an integer"),
+                       str);
+        goto error;
+    }
+
+    ret = 0;
+ error:
+    VIR_FREE(str);
+    return ret;
+}
+
+/**
+ * virCgroupGetBlkioDeviceReadBps:
+ * @group: The cgroup to gather block io setting for
+ * @path: The path of device
+ * @rbps: Returned device read bps throttle, 0 if there is none
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int
+virCgroupGetBlkioDeviceReadBps(virCgroupPtr group,
+                               const char *path,
+                               unsigned long long *rbps)
+{
+    char *str = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueForBlkDev(group,
+                                   VIR_CGROUP_CONTROLLER_BLKIO,
+                                   "blkio.throttle.read_bps_device",
+                                   path,
+                                   &str) < 0)
+        goto error;
+
+    if (!str) {
+        *rbps = 0;
+    } else if (virStrToLong_ull(str, NULL, 10, rbps) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to parse '%s' as an integer"),
+                       str);
+        goto error;
+    }
+
+    ret = 0;
+ error:
+    VIR_FREE(str);
+    return ret;
+}
+
+/**
+ * virCgroupGetBlkioDeviceWriteBps:
+ * @group: The cgroup to gather block io setting for
+ * @path: The path of device
+ * @wbps: Returned device write bps throttle, 0 if there is none
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int
+virCgroupGetBlkioDeviceWriteBps(virCgroupPtr group,
+                                const char *path,
+                                unsigned long long *wbps)
+{
+    char *str = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueForBlkDev(group,
+                                   VIR_CGROUP_CONTROLLER_BLKIO,
+                                   "blkio.throttle.write_bps_device",
+                                   path,
+                                   &str) < 0)
+        goto error;
+
+    if (!str) {
+        *wbps = 0;
+    } else if (virStrToLong_ull(str, NULL, 10, wbps) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to parse '%s' as an integer"),
+                       str);
+        goto error;
+    }
+
+    ret = 0;
+ error:
+    VIR_FREE(str);
+    return ret;
+}
+
+/**
+ * virCgroupGetBlkioDeviceWeight:
+ * @group: The cgroup to gather block io setting for
+ * @path: The path of device
+ * @weight: Returned device weight, 0 if there is none
+ *
+ * Returns: 0 on success, -1 on error
+ */
+int
+virCgroupGetBlkioDeviceWeight(virCgroupPtr group,
+                              const char *path,
+                              unsigned int *weight)
+{
+    char *str = NULL;
+    int ret = -1;
+
+    if (virCgroupGetValueForBlkDev(group,
+                                   VIR_CGROUP_CONTROLLER_BLKIO,
+                                   "blkio.weight_device",
+                                   path,
+                                   &str) < 0)
+        goto error;
+
+    if (!str) {
+        *weight = 0;
+    } else if (virStrToLong_ui(str, NULL, 10, weight) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to parse '%s' as an integer"),
+                       str);
+        goto error;
+    }
+
+    ret = 0;
+ error:
     VIR_FREE(str);
     return ret;
 }
@@ -2667,6 +2806,45 @@ virCgroupGetCpusetMems(virCgroupPtr group, char **mems)
                                 VIR_CGROUP_CONTROLLER_CPUSET,
                                 "cpuset.mems",
                                 mems);
+}
+
+
+/**
+ * virCgroupSetCpusetMemoryMigrate:
+ *
+ * @group: The cgroup to set cpuset.memory_migrate for
+ * @migrate: Whether to migrate the memory on change or not
+ *
+ * Returns: 0 on success
+ */
+int
+virCgroupSetCpusetMemoryMigrate(virCgroupPtr group, bool migrate)
+{
+    return virCgroupSetValueStr(group,
+                                VIR_CGROUP_CONTROLLER_CPUSET,
+                                "cpuset.memory_migrate",
+                                migrate ? "1" : "0");
+}
+
+
+/**
+ * virCgroupGetCpusetMemoryMigrate:
+ *
+ * @group: The cgroup to get cpuset.memory_migrate for
+ * @migrate: Migration setting
+ *
+ * Returns: 0 on success
+ */
+int
+virCgroupGetCpusetMemoryMigrate(virCgroupPtr group, bool *migrate)
+{
+    unsigned long long value = 0;
+    int ret = virCgroupGetValueU64(group,
+                                   VIR_CGROUP_CONTROLLER_CPUSET,
+                                   "cpuset.memory_migrate",
+                                   &value);
+    *migrate = !!value;
+    return ret;
 }
 
 
@@ -2983,22 +3161,23 @@ virCgroupDenyDevicePath(virCgroupPtr group, const char *path, int perms)
  */
 static int
 virCgroupGetPercpuVcpuSum(virCgroupPtr group,
-                          unsigned int nvcpupids,
+                          virBitmapPtr guestvcpus,
                           unsigned long long *sum_cpu_time,
                           size_t nsum,
                           virBitmapPtr cpumap)
 {
     int ret = -1;
-    size_t i;
+    ssize_t i = -1;
     char *buf = NULL;
     virCgroupPtr group_vcpu = NULL;
 
-    for (i = 0; i < nvcpupids; i++) {
+    while ((i = virBitmapNextSetBit(guestvcpus, i)) >= 0) {
         char *pos;
         unsigned long long tmp;
         ssize_t j;
 
-        if (virCgroupNewVcpu(group, i, false, &group_vcpu) < 0)
+        if (virCgroupNewThread(group, VIR_CGROUP_THREAD_VCPU, i,
+                               false, &group_vcpu) < 0)
             goto cleanup;
 
         if (virCgroupGetCpuacctPercpuUsage(group_vcpu, &buf) < 0)
@@ -3028,15 +3207,35 @@ virCgroupGetPercpuVcpuSum(virCgroupPtr group,
 }
 
 
+/**
+ * virCgroupGetPercpuStats:
+ * @cgroup: cgroup data structure
+ * @params: typed parameter array where data is returned
+ * @nparams: cardinality of @params
+ * @start_cpu: offset of physical CPU to get data for
+ * @ncpus: number of physical CPUs to get data for
+ * @nvcpupids: number of vCPU threads for a domain (actual number of vcpus)
+ *
+ * This function is the worker that retrieves data in the appropriate format
+ * for the terribly designed 'virDomainGetCPUStats' API. Sharing semantics with
+ * the API, this function has two modes of operation depending on magic settings
+ * of the input arguments. Please refer to docs of 'virDomainGetCPUStats' for
+ * the usage patterns of the similarly named arguments.
+ *
+ * @nvcpupids determines the count of active vcpu threads for the vm. If the
+ * threads could not be detected the percpu data is skipped.
+ *
+ * Please DON'T use this function anywhere else.
+ */
 int
 virCgroupGetPercpuStats(virCgroupPtr group,
                         virTypedParameterPtr params,
                         unsigned int nparams,
                         int start_cpu,
                         unsigned int ncpus,
-                        unsigned int nvcpupids)
+                        virBitmapPtr guestvcpus)
 {
-    int rv = -1;
+    int ret = -1;
     size_t i;
     int need_cpus, total_cpus;
     char *pos;
@@ -3049,20 +3248,21 @@ virCgroupGetPercpuStats(virCgroupPtr group,
 
     /* return the number of supported params */
     if (nparams == 0 && ncpus != 0) {
-        if (nvcpupids == 0)
+        if (!guestvcpus)
             return CGROUP_NB_PER_CPU_STAT_PARAM;
         else
             return CGROUP_NB_PER_CPU_STAT_PARAM + 1;
     }
 
     /* To parse account file, we need to know how many cpus are present.  */
-    if (!(cpumap = nodeGetPresentCPUBitmap()))
-        return rv;
+    if (!(cpumap = nodeGetPresentCPUBitmap(NULL)))
+        return -1;
 
     total_cpus = virBitmapSize(cpumap);
 
+    /* return total number of cpus */
     if (ncpus == 0) {
-        rv = total_cpus;
+        ret = total_cpus;
         goto cleanup;
     }
 
@@ -3085,9 +3285,7 @@ virCgroupGetPercpuStats(virCgroupPtr group,
     need_cpus = MIN(total_cpus, start_cpu + ncpus);
 
     for (i = 0; i < need_cpus; i++) {
-        bool present;
-        ignore_value(virBitmapGetBit(cpumap, i, &present));
-        if (!present) {
+        if (!virBitmapIsBitSet(cpumap, i)) {
             cpu_time = 0;
         } else if (virStrToLong_ull(pos, &pos, 10, &cpu_time) < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -3102,34 +3300,35 @@ virCgroupGetPercpuStats(virCgroupPtr group,
             goto cleanup;
     }
 
-    if (nvcpupids == 0 || param_idx + 1 >= nparams)
-        goto success;
     /* return percpu vcputime in index 1 */
-    param_idx++;
+    param_idx = 1;
 
-    if (VIR_ALLOC_N(sum_cpu_time, need_cpus) < 0)
-        goto cleanup;
-    if (virCgroupGetPercpuVcpuSum(group, nvcpupids, sum_cpu_time, need_cpus,
-                                  cpumap) < 0)
-        goto cleanup;
-
-    for (i = start_cpu; i < need_cpus; i++) {
-        if (virTypedParameterAssign(&params[(i - start_cpu) * nparams +
-                                            param_idx],
-                                    VIR_DOMAIN_CPU_STATS_VCPUTIME,
-                                    VIR_TYPED_PARAM_ULLONG,
-                                    sum_cpu_time[i]) < 0)
+    if (guestvcpus && param_idx < nparams) {
+        if (VIR_ALLOC_N(sum_cpu_time, need_cpus) < 0)
             goto cleanup;
+        if (virCgroupGetPercpuVcpuSum(group, guestvcpus, sum_cpu_time,
+                                      need_cpus, cpumap) < 0)
+            goto cleanup;
+
+        for (i = start_cpu; i < need_cpus; i++) {
+            if (virTypedParameterAssign(&params[(i - start_cpu) * nparams +
+                                                param_idx],
+                                        VIR_DOMAIN_CPU_STATS_VCPUTIME,
+                                        VIR_TYPED_PARAM_ULLONG,
+                                        sum_cpu_time[i]) < 0)
+                goto cleanup;
+        }
+
+        param_idx++;
     }
 
- success:
-    rv = param_idx + 1;
+    ret = param_idx;
 
  cleanup:
     virBitmapFree(cpumap);
     VIR_FREE(sum_cpu_time);
     VIR_FREE(buf);
-    return rv;
+    return ret;
 }
 
 
@@ -3758,8 +3957,8 @@ virCgroupGetFreezerState(virCgroupPtr group, char **state)
 
 
 int
-virCgroupIsolateMount(virCgroupPtr group, const char *oldroot,
-                      const char *mountopts)
+virCgroupBindMount(virCgroupPtr group, const char *oldroot,
+                   const char *mountopts)
 {
     int ret = -1;
     size_t i;
@@ -3795,10 +3994,9 @@ virCgroupIsolateMount(virCgroupPtr group, const char *oldroot,
 
         if (!virFileExists(group->controllers[i].mountPoint)) {
             char *src;
-            if (virAsprintf(&src, "%s%s%s",
+            if (virAsprintf(&src, "%s%s",
                             oldroot,
-                            group->controllers[i].mountPoint,
-                            group->controllers[i].placement) < 0)
+                            group->controllers[i].mountPoint) < 0)
                 goto cleanup;
 
             VIR_DEBUG("Create mount point '%s'",
@@ -3966,12 +4164,37 @@ virCgroupHasEmptyTasks(virCgroupPtr cgroup, int controller)
     return ret;
 }
 
+bool
+virCgroupControllerAvailable(int controller)
+{
+    virCgroupPtr cgroup;
+    bool ret = false;
+
+    if (virCgroupNewSelf(&cgroup) < 0)
+        return ret;
+
+    ret = virCgroupHasController(cgroup, controller);
+    virCgroupFree(&cgroup);
+    return ret;
+}
+
 #else /* !VIR_CGROUP_SUPPORTED */
 
 bool
 virCgroupAvailable(void)
 {
     return false;
+}
+
+
+int
+virCgroupDetectMountsFromFile(virCgroupPtr group ATTRIBUTE_UNUSED,
+                              const char *path ATTRIBUTE_UNUSED,
+                              bool checkLinks ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENXIO, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
 }
 
 
@@ -4010,33 +4233,11 @@ virCgroupNewDomainPartition(virCgroupPtr partition ATTRIBUTE_UNUSED,
 
 
 int
-virCgroupNewVcpu(virCgroupPtr domain ATTRIBUTE_UNUSED,
-                 int vcpuid ATTRIBUTE_UNUSED,
-                 bool create ATTRIBUTE_UNUSED,
-                 virCgroupPtr *group ATTRIBUTE_UNUSED)
-{
-    virReportSystemError(ENXIO, "%s",
-                         _("Control groups not supported on this platform"));
-    return -1;
-}
-
-
-int
-virCgroupNewEmulator(virCgroupPtr domain ATTRIBUTE_UNUSED,
-                     bool create ATTRIBUTE_UNUSED,
-                     virCgroupPtr *group ATTRIBUTE_UNUSED)
-{
-    virReportSystemError(ENXIO, "%s",
-                         _("Control groups not supported on this platform"));
-    return -1;
-}
-
-
-int
-virCgroupNewIOThread(virCgroupPtr domain ATTRIBUTE_UNUSED,
-                     int iothreadid ATTRIBUTE_UNUSED,
-                     bool create ATTRIBUTE_UNUSED,
-                     virCgroupPtr *group ATTRIBUTE_UNUSED)
+virCgroupNewThread(virCgroupPtr domain ATTRIBUTE_UNUSED,
+                   virCgroupThreadName nameval ATTRIBUTE_UNUSED,
+                   int id ATTRIBUTE_UNUSED,
+                   bool create ATTRIBUTE_UNUSED,
+                   virCgroupPtr *group ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENXIO, "%s",
                          _("Control groups not supported on this platform"));
@@ -4058,8 +4259,9 @@ virCgroupNewDetect(pid_t pid ATTRIBUTE_UNUSED,
 int
 virCgroupNewDetectMachine(const char *name ATTRIBUTE_UNUSED,
                           const char *drivername ATTRIBUTE_UNUSED,
+                          int id ATTRIBUTE_UNUSED,
+                          bool privileged ATTRIBUTE_UNUSED,
                           pid_t pid ATTRIBUTE_UNUSED,
-                          const char *partition ATTRIBUTE_UNUSED,
                           int controllers ATTRIBUTE_UNUSED,
                           virCgroupPtr *group ATTRIBUTE_UNUSED)
 {
@@ -4069,9 +4271,7 @@ virCgroupNewDetectMachine(const char *name ATTRIBUTE_UNUSED,
 }
 
 
-int virCgroupTerminateMachine(const char *name ATTRIBUTE_UNUSED,
-                              const char *drivername ATTRIBUTE_UNUSED,
-                              bool privileged ATTRIBUTE_UNUSED)
+int virCgroupTerminateMachine(const char *name ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENXIO, "%s",
                          _("Control groups not supported on this platform"));
@@ -4082,7 +4282,6 @@ int virCgroupTerminateMachine(const char *name ATTRIBUTE_UNUSED,
 int
 virCgroupNewMachine(const char *name ATTRIBUTE_UNUSED,
                     const char *drivername ATTRIBUTE_UNUSED,
-                    bool privileged ATTRIBUTE_UNUSED,
                     const unsigned char *uuid ATTRIBUTE_UNUSED,
                     const char *rootdir ATTRIBUTE_UNUSED,
                     pid_t pidleader ATTRIBUTE_UNUSED,
@@ -4263,6 +4462,55 @@ virCgroupSetBlkioDeviceWriteBps(virCgroupPtr group ATTRIBUTE_UNUSED,
     return -1;
 }
 
+int
+virCgroupGetBlkioDeviceWeight(virCgroupPtr group ATTRIBUTE_UNUSED,
+                              const char *path ATTRIBUTE_UNUSED,
+                              unsigned int *weight ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+int
+virCgroupGetBlkioDeviceReadIops(virCgroupPtr group ATTRIBUTE_UNUSED,
+                                const char *path ATTRIBUTE_UNUSED,
+                                unsigned int *riops ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+int
+virCgroupGetBlkioDeviceWriteIops(virCgroupPtr group ATTRIBUTE_UNUSED,
+                                 const char *path ATTRIBUTE_UNUSED,
+                                 unsigned int *wiops ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+int
+virCgroupGetBlkioDeviceReadBps(virCgroupPtr group ATTRIBUTE_UNUSED,
+                               const char *path ATTRIBUTE_UNUSED,
+                               unsigned long long *rbps ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+int
+virCgroupGetBlkioDeviceWriteBps(virCgroupPtr group ATTRIBUTE_UNUSED,
+                                const char *path ATTRIBUTE_UNUSED,
+                                unsigned long long *wbps ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
 
 int
 virCgroupSetMemory(virCgroupPtr group ATTRIBUTE_UNUSED,
@@ -4367,6 +4615,26 @@ virCgroupSetCpusetMems(virCgroupPtr group ATTRIBUTE_UNUSED,
 int
 virCgroupGetCpusetMems(virCgroupPtr group ATTRIBUTE_UNUSED,
                        char **mems ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+
+int
+virCgroupSetCpusetMemoryMigrate(virCgroupPtr group ATTRIBUTE_UNUSED,
+                                bool migrate ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Control groups not supported on this platform"));
+    return -1;
+}
+
+
+int
+virCgroupGetCpusetMemoryMigrate(virCgroupPtr group ATTRIBUTE_UNUSED,
+                                bool *migrate ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Control groups not supported on this platform"));
@@ -4653,9 +4921,9 @@ virCgroupGetFreezerState(virCgroupPtr group ATTRIBUTE_UNUSED,
 
 
 int
-virCgroupIsolateMount(virCgroupPtr group ATTRIBUTE_UNUSED,
-                      const char *oldroot ATTRIBUTE_UNUSED,
-                      const char *mountopts ATTRIBUTE_UNUSED)
+virCgroupBindMount(virCgroupPtr group ATTRIBUTE_UNUSED,
+                   const char *oldroot ATTRIBUTE_UNUSED,
+                   const char *mountopts ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Control groups not supported on this platform"));
@@ -4677,7 +4945,7 @@ virCgroupGetPercpuStats(virCgroupPtr group ATTRIBUTE_UNUSED,
                         unsigned int nparams ATTRIBUTE_UNUSED,
                         int start_cpu ATTRIBUTE_UNUSED,
                         unsigned int ncpus ATTRIBUTE_UNUSED,
-                        unsigned int nvcpupids ATTRIBUTE_UNUSED)
+                        virBitmapPtr guestvcpus ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Control groups not supported on this platform"));
@@ -4705,4 +4973,9 @@ virCgroupHasEmptyTasks(virCgroupPtr cgroup ATTRIBUTE_UNUSED,
     return -1;
 }
 
+bool
+virCgroupControllerAvailable(int controller ATTRIBUTE_UNUSED)
+{
+    return false;
+}
 #endif /* !VIR_CGROUP_SUPPORTED */

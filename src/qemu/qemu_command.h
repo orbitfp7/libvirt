@@ -1,7 +1,7 @@
 /*
  * qemu_command.h: QEMU command generation
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2016 Red Hat, Inc.
  * Copyright (C) 2006 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -36,7 +36,6 @@
 # define QEMU_CONFIG_FORMAT_ARGV "qemu-argv"
 
 # define QEMU_DRIVE_HOST_PREFIX "drive-"
-# define QEMU_VIRTIO_SERIAL_PREFIX "virtio-serial"
 # define QEMU_FSDEV_HOST_PREFIX "fsdev-"
 
 /* These are only defaults, they can be changed now in qemu.conf and
@@ -55,7 +54,7 @@
 # define QEMU_MIGRATION_PORT_MIN 49152
 # define QEMU_MIGRATION_PORT_MAX 49215
 
-# define QEMU_QXL_VGAMEM_DEFAULT 16 * 1024
+VIR_ENUM_DECL(qemuVideo)
 
 typedef struct _qemuBuildCommandLineCallbacks qemuBuildCommandLineCallbacks;
 typedef qemuBuildCommandLineCallbacks *qemuBuildCommandLineCallbacksPtr;
@@ -64,7 +63,7 @@ struct _qemuBuildCommandLineCallbacks {
                                       const char *adapter,
                                       unsigned int bus,
                                       unsigned int target,
-                                      unsigned int unit);
+                                      unsigned long long unit);
 };
 
 extern qemuBuildCommandLineCallbacks buildCommandLineCallbacks;
@@ -79,8 +78,7 @@ virCommandPtr qemuBuildCommandLine(virConnectPtr conn,
                                    virDomainChrSourceDefPtr monitor_chr,
                                    bool monitor_json,
                                    virQEMUCapsPtr qemuCaps,
-                                   const char *migrateFrom,
-                                   int migrateFd,
+                                   const char *migrateURI,
                                    virDomainSnapshotObjPtr current_snapshot,
                                    virNetDevVPortProfileOp vmop,
                                    qemuBuildCommandLineCallbacksPtr callbacks,
@@ -89,7 +87,7 @@ virCommandPtr qemuBuildCommandLine(virConnectPtr conn,
                                    virBitmapPtr nodeset,
                                    size_t *nnicindexes,
                                    int **nicindexes)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(11);
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(10);
 
 /* Generate '-device' string for chardev device */
 int
@@ -162,12 +160,27 @@ char *qemuBuildSoundDevStr(virDomainDefPtr domainDef,
                            virDomainSoundDefPtr sound,
                            virQEMUCapsPtr qemuCaps);
 
+int qemuBuildMemoryBackendStr(unsigned long long size,
+                              unsigned long long pagesize,
+                              int guestNode,
+                              virBitmapPtr userNodeset,
+                              virBitmapPtr autoNodeset,
+                              virDomainDefPtr def,
+                              virQEMUCapsPtr qemuCaps,
+                              virQEMUDriverConfigPtr cfg,
+                              const char **backendType,
+                              virJSONValuePtr *backendProps,
+                              bool force);
+
+char *qemuBuildMemoryDeviceStr(virDomainMemoryDefPtr mem);
+
 /* Legacy, pre device support */
 char *qemuBuildPCIHostdevPCIDevStr(virDomainHostdevDefPtr dev,
                                    virQEMUCapsPtr qemuCaps);
 /* Current, best practice */
 char *qemuBuildPCIHostdevDevStr(virDomainDefPtr def,
                                 virDomainHostdevDefPtr dev,
+                                int bootIndex,
                                 const char *configfd,
                                 virQEMUCapsPtr qemuCaps);
 
@@ -178,6 +191,13 @@ int qemuBuildRNGBackendProps(virDomainRNGDefPtr rng,
                              virQEMUCapsPtr qemuCaps,
                              const char **type,
                              virJSONValuePtr *props);
+
+char *qemuBuildShmemDevStr(virDomainDefPtr def,
+                           virDomainShmemDefPtr shmem,
+                           virQEMUCapsPtr qemuCaps);
+char *qemuBuildShmemBackendStr(virDomainShmemDefPtr shmem,
+                               virQEMUCapsPtr qemuCaps);
+
 
 int qemuOpenPCIConfig(virDomainHostdevDefPtr dev);
 
@@ -206,16 +226,15 @@ char *qemuBuildRedirdevDevStr(virDomainDefPtr def,
 int qemuNetworkIfaceConnect(virDomainDefPtr def,
                             virQEMUDriverPtr driver,
                             virDomainNetDefPtr net,
-                            virQEMUCapsPtr qemuCaps,
                             int *tapfd,
-                            size_t *tapfdSize,
-                            int *nicindex)
+                            size_t *tapfdSize)
     ATTRIBUTE_NONNULL(2);
 
 int qemuPhysIfaceConnect(virDomainDefPtr def,
                          virQEMUDriverPtr driver,
                          virDomainNetDefPtr net,
-                         virQEMUCapsPtr qemuCaps,
+                         int *tapfd,
+                         size_t tapfdSize,
                          virNetDevVPortProfileOp vmop);
 
 int qemuOpenVhostNet(virDomainDefPtr def,
@@ -225,23 +244,6 @@ int qemuOpenVhostNet(virDomainDefPtr def,
                      size_t *vhostfdSize);
 
 int qemuNetworkPrepareDevices(virDomainDefPtr def);
-
-/*
- * NB: def->name can be NULL upon return and the caller
- * *must* decide how to fill in a name in this case
- */
-virDomainDefPtr qemuParseCommandLineString(virCapsPtr qemuCaps,
-                                           virDomainXMLOptionPtr xmlopt,
-                                           const char *args,
-                                           char **pidfile,
-                                           virDomainChrSourceDefPtr *monConfig,
-                                           bool *monJSON);
-virDomainDefPtr qemuParseCommandLinePid(virCapsPtr qemuCaps,
-                                        virDomainXMLOptionPtr xmlopt,
-                                        pid_t pid,
-                                        char **pidfile,
-                                        virDomainChrSourceDefPtr *monConfig,
-                                        bool *monJSON);
 
 int qemuDomainAssignAddresses(virDomainDefPtr def,
                               virQEMUCapsPtr qemuCaps,
@@ -255,16 +257,6 @@ void qemuDomainReleaseDeviceAddress(virDomainObjPtr vm,
                                     const char *devstr);
 
 
-int qemuDomainAssignPCIAddresses(virDomainDefPtr def,
-                                 virQEMUCapsPtr qemuCaps,
-                                 virDomainObjPtr obj);
-virDomainPCIAddressSetPtr qemuDomainPCIAddressSetCreate(virDomainDefPtr def,
-                                                        unsigned int nbuses,
-                                                        bool dryRun);
-
-int qemuAssignDevicePCISlots(virDomainDefPtr def,
-                             virDomainPCIAddressSetPtr addrs);
-
 int qemuAssignDeviceAliases(virDomainDefPtr def, virQEMUCapsPtr qemuCaps);
 int qemuDomainNetVLAN(virDomainNetDefPtr def);
 int qemuAssignDeviceNetAlias(virDomainDefPtr def, virDomainNetDefPtr net, int idx);
@@ -272,19 +264,15 @@ int qemuAssignDeviceDiskAlias(virDomainDefPtr vmdef,
                               virDomainDiskDefPtr def,
                               virQEMUCapsPtr qemuCaps);
 int qemuAssignDeviceHostdevAlias(virDomainDefPtr def, virDomainHostdevDefPtr hostdev, int idx);
-int qemuAssignDeviceControllerAlias(virDomainControllerDefPtr controller);
+int
+qemuAssignDeviceControllerAlias(virDomainDefPtr domainDef,
+                                virQEMUCapsPtr qemuCaps,
+                                virDomainControllerDefPtr controller);
 int qemuAssignDeviceRedirdevAlias(virDomainDefPtr def, virDomainRedirdevDefPtr redirdev, int idx);
 int qemuAssignDeviceChrAlias(virDomainDefPtr def,
                              virDomainChrDefPtr chr,
                              ssize_t idx);
 int qemuAssignDeviceRNGAlias(virDomainRNGDefPtr rng, size_t idx);
-
-int
-qemuParseKeywords(const char *str,
-                  char ***retkeywords,
-                  char ***retvalues,
-                  int *retnkeywords,
-                  int allowEmptyValue);
 
 int qemuGetDriveSourceString(virStorageSourcePtr src,
                              virConnectPtr conn,
@@ -294,4 +282,10 @@ int qemuCheckDiskConfig(virDomainDiskDefPtr disk);
 
 bool
 qemuCheckFips(void);
+
+bool qemuCheckCCWS390AddressSupport(virDomainDefPtr def,
+                                    virDomainDeviceInfo info,
+                                    virQEMUCapsPtr qemuCaps,
+                                    const char *devicename);
+
 #endif /* __QEMU_COMMAND_H__*/

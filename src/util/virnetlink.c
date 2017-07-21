@@ -1,6 +1,6 @@
 /*
- * Copyright (C) 2010-2015 Red Hat, Inc.
- * Copyright (C) 2010-2012 IBM Corporation
+ * Copyright (C) 2010-2016 Red Hat, Inc.
+ * Copyright (C) 2010-2012, 2016 IBM Corporation
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -65,10 +65,12 @@ struct virNetlinkEventHandle {
 
 # ifdef HAVE_LIBNL1
 #  define virNetlinkAlloc nl_handle_alloc
+#  define virNetlinkSetBufferSize nl_set_buffer_size
 #  define virNetlinkFree nl_handle_destroy
 typedef struct nl_handle virNetlinkHandle;
 # else
 #  define virNetlinkAlloc nl_socket_alloc
+#  define virNetlinkSetBufferSize nl_socket_set_buffer_size
 #  define virNetlinkFree nl_socket_free
 typedef struct nl_sock virNetlinkHandle;
 # endif
@@ -160,6 +162,57 @@ virNetlinkShutdown(void)
     }
 }
 
+
+/**
+ * virNetLinkCreateSocket:
+ *
+ * @protocol: which protocol to connect to (e.g. NETLINK_ROUTE,
+ *
+ * Create a netlink socket, set its buffer size, and turn on message
+ * peeking (so the buffer size can be dynamically increased if
+ * needed).
+ *
+ * Returns a handle to the new netlink socket, or 0 if there was a failure.
+ *
+ */
+static virNetlinkHandle *
+virNetlinkCreateSocket(int protocol)
+{
+    virNetlinkHandle *nlhandle = NULL;
+
+    if (!(nlhandle = virNetlinkAlloc())) {
+        virReportSystemError(errno, "%s",
+                             _("cannot allocate nlhandle for netlink"));
+        goto error;
+    }
+    if (nl_connect(nlhandle, protocol) < 0) {
+        virReportSystemError(errno,
+                             _("cannot connect to netlink socket "
+                               "with protocol %d"), protocol);
+        goto error;
+    }
+
+    if (virNetlinkSetBufferSize(nlhandle, 131702, 0) < 0) {
+        virReportSystemError(errno, "%s",
+                             _("cannot set netlink socket buffer "
+                               "size to 128k"));
+        goto error;
+    }
+    nl_socket_enable_msg_peek(nlhandle);
+
+ cleanup:
+    return nlhandle;
+
+ error:
+    if (nlhandle) {
+        nl_close(nlhandle);
+        virNetlinkFree(nlhandle);
+        nlhandle = NULL;
+    }
+    goto cleanup;
+}
+
+
 /**
  * virNetlinkCommand:
  * @nlmsg: pointer to netlink message
@@ -200,19 +253,8 @@ int virNetlinkCommand(struct nl_msg *nl_msg,
         goto cleanup;
     }
 
-    nlhandle = virNetlinkAlloc();
-    if (!nlhandle) {
-        virReportSystemError(errno,
-                             "%s", _("cannot allocate nlhandle for netlink"));
+    if (!(nlhandle = virNetlinkCreateSocket(protocol)))
         goto cleanup;
-    }
-
-    if (nl_connect(nlhandle, protocol) < 0) {
-        virReportSystemError(errno,
-                        _("cannot connect to netlink socket with protocol %d"),
-                             protocol);
-        goto cleanup;
-    }
 
     fd = nl_socket_get_fd(nlhandle);
     if (fd < 0) {
@@ -277,6 +319,95 @@ int virNetlinkCommand(struct nl_msg *nl_msg,
 }
 
 
+/**
+ * virNetlinkDelLink:
+ *
+ * @ifname: Name of the link
+ * @fallback: pointer to an alternate function that will
+ *            be called to perform the delete if RTM_DELLINK fails
+ *            with EOPNOTSUPP (any other error will simply be treated
+ *            as an error).
+ *
+ * delete a network "link" (aka interface aka device) with the given
+ * name. This works for many different types of network devices,
+ * including macvtap and bridges.
+ *
+ * Returns 0 on success, -1 on fatal error.
+ */
+int
+virNetlinkDelLink(const char *ifname, virNetlinkDelLinkFallback fallback)
+{
+    int rc = -1;
+    struct nlmsghdr *resp = NULL;
+    struct nlmsgerr *err;
+    struct ifinfomsg ifinfo = { .ifi_family = AF_UNSPEC };
+    unsigned int recvbuflen;
+    struct nl_msg *nl_msg;
+
+    nl_msg = nlmsg_alloc_simple(RTM_DELLINK,
+                                NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL);
+    if (!nl_msg) {
+        virReportOOMError();
+        return -1;
+    }
+
+    if (nlmsg_append(nl_msg,  &ifinfo, sizeof(ifinfo), NLMSG_ALIGNTO) < 0)
+        goto buffer_too_small;
+
+    if (nla_put(nl_msg, IFLA_IFNAME, strlen(ifname)+1, ifname) < 0)
+        goto buffer_too_small;
+
+    if (virNetlinkCommand(nl_msg, &resp, &recvbuflen, 0, 0,
+                          NETLINK_ROUTE, 0) < 0) {
+        goto cleanup;
+    }
+
+    if (recvbuflen < NLMSG_LENGTH(0) || resp == NULL)
+        goto malformed_resp;
+
+    switch (resp->nlmsg_type) {
+    case NLMSG_ERROR:
+        err = (struct nlmsgerr *)NLMSG_DATA(resp);
+        if (resp->nlmsg_len < NLMSG_LENGTH(sizeof(*err)))
+            goto malformed_resp;
+
+        if (-err->error == EOPNOTSUPP && fallback) {
+            rc = fallback(ifname);
+            goto cleanup;
+        }
+        if (err->error) {
+            virReportSystemError(-err->error,
+                                 _("error destroying network device %s"),
+                                 ifname);
+            goto cleanup;
+        }
+        break;
+
+    case NLMSG_DONE:
+        break;
+
+    default:
+        goto malformed_resp;
+    }
+
+    rc = 0;
+ cleanup:
+    nlmsg_free(nl_msg);
+    VIR_FREE(resp);
+    return rc;
+
+ malformed_resp:
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("malformed netlink response message"));
+    goto cleanup;
+
+ buffer_too_small:
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("allocated netlink buffer is too small"));
+    goto cleanup;
+}
+
+
 int
 virNetlinkGetErrorCode(struct nlmsghdr *resp, unsigned int recvbuflen)
 {
@@ -305,7 +436,9 @@ virNetlinkGetErrorCode(struct nlmsghdr *resp, unsigned int recvbuflen)
         break;
 
     default:
-        goto malformed_resp;
+        /* We allow multipart messages. */
+        if (!(resp->nlmsg_flags & NLM_F_MULTI))
+            goto malformed_resp;
     }
 
     return result;
@@ -572,19 +705,8 @@ virNetlinkEventServiceStart(unsigned int protocol, unsigned int groups)
     virNetlinkEventServerLock(srv);
 
     /* Allocate a new socket and get fd */
-    srv->netlinknh = virNetlinkAlloc();
-
-    if (!srv->netlinknh) {
-        virReportSystemError(errno,
-                             "%s", _("cannot allocate nlhandle for virNetlinkEvent server"));
+    if (!(srv->netlinknh = virNetlinkCreateSocket(protocol)))
         goto error_locked;
-    }
-
-    if (nl_connect(srv->netlinknh, protocol) < 0) {
-        virReportSystemError(errno,
-                             _("cannot connect to netlink socket with protocol %d"), protocol);
-        goto error_server;
-    }
 
     fd = nl_socket_get_fd(srv->netlinknh);
     if (fd < 0) {
@@ -798,6 +920,15 @@ int virNetlinkCommand(struct nl_msg *nl_msg ATTRIBUTE_UNUSED,
                       uint32_t dst_pid ATTRIBUTE_UNUSED,
                       unsigned int protocol ATTRIBUTE_UNUSED,
                       unsigned int groups ATTRIBUTE_UNUSED)
+{
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _(unsupported));
+    return -1;
+}
+
+
+int
+virNetlinkDelLink(const char *ifname ATTRIBUTE_UNUSED,
+                  virNetlinkDelLinkFallback fallback ATTRIBUTE_UNUSED)
 {
     virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _(unsupported));
     return -1;

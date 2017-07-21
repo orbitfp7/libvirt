@@ -26,16 +26,16 @@
 
 char *virSystemdMakeScopeName(const char *name,
                               const char *drivername,
-                              const char *slicename);
+                              bool legacy_behaviour);
 char *virSystemdMakeSliceName(const char *partition);
 
-char *virSystemdMakeMachineName(const char *name,
-                                const char *drivername,
+char *virSystemdMakeMachineName(const char *drivername,
+                                int id,
+                                const char *name,
                                 bool privileged);
 
 int virSystemdCreateMachine(const char *name,
                             const char *drivername,
-                            bool privileged,
                             const unsigned char *uuid,
                             const char *rootdir,
                             pid_t pidleader,
@@ -44,9 +44,7 @@ int virSystemdCreateMachine(const char *name,
                             int *nicindexes,
                             const char *partition);
 
-int virSystemdTerminateMachine(const char *name,
-                               const char *drivername,
-                               bool privileged);
+int virSystemdTerminateMachine(const char *name);
 
 void virSystemdNotifyStartup(void);
 
@@ -55,5 +53,7 @@ int virSystemdCanSuspend(bool *result);
 int virSystemdCanHibernate(bool *result);
 
 int virSystemdCanHybridSleep(bool *result);
+
+char *virSystemdGetMachineNameByPID(pid_t pid);
 
 #endif /* __VIR_SYSTEMD_H__ */

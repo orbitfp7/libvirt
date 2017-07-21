@@ -348,12 +348,10 @@ lxcCreateNetDef(const char *type,
     if (VIR_ALLOC(net) < 0)
         goto error;
 
-    if (flag) {
-        if (STREQ(flag, "up"))
-            net->linkstate = VIR_DOMAIN_NET_INTERFACE_LINK_STATE_UP;
-        else
-            net->linkstate = VIR_DOMAIN_NET_INTERFACE_LINK_STATE_DOWN;
-    }
+    if (STREQ_NULLABLE(flag, "up"))
+        net->linkstate = VIR_DOMAIN_NET_INTERFACE_LINK_STATE_UP;
+    else
+        net->linkstate = VIR_DOMAIN_NET_INTERFACE_LINK_STATE_DOWN;
 
     if (VIR_STRDUP(net->ifname_guest, name) < 0)
         goto error;
@@ -613,7 +611,7 @@ lxcNetworkWalkCallback(const char *name, virConfValuePtr value, void *data)
             family = AF_INET6;
 
         ipparts = virStringSplit(value->str, "/", 2);
-        if (virStringListLength(ipparts) != 2 ||
+        if (virStringListLength((const char * const *)ipparts) != 2 ||
             virSocketAddrParse(&ip->address, ipparts[0], family) < 0 ||
             virStrToLong_ui(ipparts[1], NULL, 10, &ip->prefix) < 0) {
 
@@ -772,8 +770,8 @@ lxcSetMemTune(virDomainDefPtr def, virConfPtr properties)
         if (lxcConvertSize(value->str, &size) < 0)
             return -1;
         size = size / 1024;
-        def->mem.max_balloon = size;
-        def->mem.hard_limit = size;
+        virDomainDefSetMemoryTotal(def, size);
+        def->mem.hard_limit = virMemoryLimitTruncate(size);
     }
 
     if ((value = virConfGetValue(properties,
@@ -782,7 +780,7 @@ lxcSetMemTune(virDomainDefPtr def, virConfPtr properties)
         if (lxcConvertSize(value->str, &size) < 0)
             return -1;
 
-        def->mem.soft_limit = size / 1024;
+        def->mem.soft_limit = virMemoryLimitTruncate(size / 1024);
     }
 
     if ((value = virConfGetValue(properties,
@@ -791,7 +789,7 @@ lxcSetMemTune(virDomainDefPtr def, virConfPtr properties)
         if (lxcConvertSize(value->str, &size) < 0)
             return -1;
 
-       def->mem.swap_hard_limit = size / 1024;
+        def->mem.swap_hard_limit = virMemoryLimitTruncate(size / 1024);
     }
     return 0;
 }
@@ -847,7 +845,7 @@ lxcSetCpusetTune(virDomainDefPtr def, virConfPtr properties)
         value->str) {
         if (virBitmapParse(value->str, 0, &nodeset, VIR_DOMAIN_CPUMASK_LEN) < 0)
             return -1;
-        if (virDomainNumatuneSet(&def->numatune,
+        if (virDomainNumatuneSet(def->numa,
                                  def->placement_mode ==
                                  VIR_DOMAIN_CPU_PLACEMENT_MODE_STATIC,
                                  VIR_DOMAIN_NUMATUNE_PLACEMENT_STATIC,
@@ -993,7 +991,9 @@ lxcSetCapDrop(virDomainDefPtr def, virConfPtr properties)
 }
 
 virDomainDefPtr
-lxcParseConfigString(const char *config)
+lxcParseConfigString(const char *config,
+                     virCapsPtr caps,
+                     virDomainXMLOptionPtr xmlopt)
 {
     virDomainDefPtr vmdef = NULL;
     virConfPtr properties = NULL;
@@ -1002,7 +1002,7 @@ lxcParseConfigString(const char *config)
     if (!(properties = virConfReadMem(config, 0, VIR_CONF_FLAG_LXC_FORMAT)))
         return NULL;
 
-    if (VIR_ALLOC(vmdef) < 0)
+    if (!(vmdef = virDomainDefNew()))
         goto error;
 
     if (virUUIDGenerate(vmdef->uuid) < 0) {
@@ -1012,22 +1012,23 @@ lxcParseConfigString(const char *config)
     }
 
     vmdef->id = -1;
-    vmdef->mem.max_balloon = 64 * 1024;
+    virDomainDefSetMemoryTotal(vmdef, 64 * 1024);
 
     vmdef->onReboot = VIR_DOMAIN_LIFECYCLE_RESTART;
-    vmdef->onCrash = VIR_DOMAIN_LIFECYCLE_DESTROY;
+    vmdef->onCrash = VIR_DOMAIN_LIFECYCLE_CRASH_DESTROY;
     vmdef->onPoweroff = VIR_DOMAIN_LIFECYCLE_DESTROY;
     vmdef->virtType = VIR_DOMAIN_VIRT_LXC;
 
     /* Value not handled by the LXC driver, setting to
      * minimum required to make XML parsing pass */
-    vmdef->maxvcpus = 1;
-    vmdef->vcpus = 1;
+    if (virDomainDefSetVcpusMax(vmdef, 1) < 0)
+        goto error;
+
+    if (virDomainDefSetVcpus(vmdef, 1) < 0)
+        goto error;
 
     vmdef->nfss = 0;
-
-    if (VIR_STRDUP(vmdef->os.type, "exe") < 0)
-        goto error;
+    vmdef->os.type = VIR_DOMAIN_OSTYPE_EXE;
 
     if ((value = virConfGetValue(properties, "lxc.arch")) && value->str) {
         virArch arch = virArchFromString(value->str);
@@ -1091,6 +1092,10 @@ lxcParseConfigString(const char *config)
 
     /* lxc.cap.drop */
     lxcSetCapDrop(vmdef, properties);
+
+    if (virDomainDefPostParse(vmdef, caps, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
+                              xmlopt) < 0)
+        goto cleanup;
 
     goto cleanup;
 

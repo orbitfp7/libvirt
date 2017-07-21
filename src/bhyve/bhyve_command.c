@@ -232,18 +232,39 @@ virBhyveProcessBuildBhyveCmd(virConnectPtr conn,
 
     /* CPUs */
     virCommandAddArg(cmd, "-c");
-    virCommandAddArgFormat(cmd, "%d", def->vcpus);
+    virCommandAddArgFormat(cmd, "%d", virDomainDefGetVcpus(def));
 
     /* Memory */
     virCommandAddArg(cmd, "-m");
     virCommandAddArgFormat(cmd, "%llu",
-                           VIR_DIV_UP(def->mem.max_balloon, 1024));
+                           VIR_DIV_UP(virDomainDefGetMemoryInitial(def), 1024));
 
     /* Options */
     if (def->features[VIR_DOMAIN_FEATURE_ACPI] == VIR_TRISTATE_SWITCH_ON)
         virCommandAddArg(cmd, "-A"); /* Create an ACPI table */
     if (def->features[VIR_DOMAIN_FEATURE_APIC] == VIR_TRISTATE_SWITCH_ON)
         virCommandAddArg(cmd, "-I"); /* Present ioapic to the guest */
+
+    switch (def->clock.offset) {
+    case VIR_DOMAIN_CLOCK_OFFSET_LOCALTIME:
+        /* used by default in bhyve */
+        break;
+    case VIR_DOMAIN_CLOCK_OFFSET_UTC:
+        if ((bhyveDriverGetCaps(conn) & BHYVE_CAP_RTC_UTC) != 0) {
+            virCommandAddArg(cmd, "-u");
+        } else {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("Installed bhyve binary does not support "
+                          "UTC clock"));
+            goto error;
+        }
+        break;
+    default:
+         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                        _("unsupported clock offset '%s'"),
+                        virDomainClockOffsetTypeToString(def->clock.offset));
+         goto error;
+    }
 
     /* Clarification about -H and -P flags from Peter Grehan:
      * -H and -P flags force the guest to exit when it executes IA32 HLT and PAUSE
@@ -322,7 +343,7 @@ virBhyveProcessBuildBhyveloadCmd(virDomainDefPtr def, virDomainDiskDefPtr disk)
         /* Memory (MB) */
         virCommandAddArg(cmd, "-m");
         virCommandAddArgFormat(cmd, "%llu",
-                               VIR_DIV_UP(def->mem.max_balloon, 1024));
+                               VIR_DIV_UP(virDomainDefGetMemoryInitial(def), 1024));
 
         /* Image path */
         virCommandAddArg(cmd, "-d");
@@ -477,7 +498,7 @@ virBhyveProcessBuildGrubbhyveCmd(virDomainDefPtr def,
     /* Memory in MB */
     virCommandAddArg(cmd, "--memory");
     virCommandAddArgFormat(cmd, "%llu",
-                           VIR_DIV_UP(def->mem.max_balloon, 1024));
+                           VIR_DIV_UP(virDomainDefGetMemoryInitial(def), 1024));
 
     if ((bhyveDriverGetGrubCaps(conn) & BHYVE_GRUB_CAP_CONSDEV) != 0 &&
         def->nserials > 0) {
@@ -501,22 +522,102 @@ virBhyveProcessBuildGrubbhyveCmd(virDomainDefPtr def,
     return cmd;
 }
 
+static virDomainDiskDefPtr
+virBhyveGetBootDisk(virConnectPtr conn, virDomainDefPtr def)
+{
+    size_t i;
+    virDomainDiskDefPtr match = NULL;
+    int boot_dev = -1;
+
+    if (def->ndisks < 1) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("Domain should have at least one disk defined"));
+        return NULL;
+    }
+
+    if (def->os.nBootDevs > 1) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("Only one boot device is supported"));
+        return NULL;
+    } else if (def->os.nBootDevs == 1) {
+        switch (def->os.bootDevs[0]) {
+        case VIR_DOMAIN_BOOT_CDROM:
+            boot_dev = VIR_DOMAIN_DISK_DEVICE_CDROM;
+            break;
+        case VIR_DOMAIN_BOOT_DISK:
+            boot_dev = VIR_DOMAIN_DISK_DEVICE_DISK;
+            break;
+        default:
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           _("Cannot boot from device %s"),
+                           virDomainBootTypeToString(def->os.bootDevs[0]));
+            return NULL;
+        }
+    }
+
+    if (boot_dev != -1) {
+        /* If boot_dev is set, we return the first device of
+         * the request type */
+        for (i = 0; i < def->ndisks; i++) {
+            if (!virBhyveUsableDisk(conn, def->disks[i]))
+                continue;
+
+            if (def->disks[i]->device == boot_dev) {
+                match = def->disks[i];
+                break;
+            }
+        }
+
+        if (match == NULL) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
+                           _("Cannot find boot device of requested type %s"),
+                           virDomainBootTypeToString(def->os.bootDevs[0]));
+            return NULL;
+        }
+    } else {
+        /* Otherwise, if boot_dev is not set, we try to find if bootIndex
+         * is set for individual device. However, as bhyve does not support
+         * specifying real boot priority for devices, we allow only single
+         * device with boot priority set.
+         */
+        int first_usable_disk_index = -1;
+
+        for (i = 0; i < def->ndisks; i++) {
+            if (!virBhyveUsableDisk(conn, def->disks[i]))
+                continue;
+            else
+                first_usable_disk_index = i;
+
+            if (def->disks[i]->info.bootIndex > 0) {
+                if (match == NULL) {
+                    match = def->disks[i];
+                } else {
+                    virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                                   _("Only one boot device is supported"));
+                    return NULL;
+                }
+            }
+        }
+
+        /* If user didn't explicily specify boot priority,
+         * just return the first usable disk */
+        if ((match == NULL) && (first_usable_disk_index >= 0))
+            return def->disks[first_usable_disk_index];
+    }
+
+    return match;
+}
+
 virCommandPtr
 virBhyveProcessBuildLoadCmd(virConnectPtr conn, virDomainDefPtr def,
                             const char *devmap_file, char **devicesmap_out)
 {
-    virDomainDiskDefPtr disk;
-
-    if (def->ndisks < 1) {
-        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
-                       _("domain should have at least one disk defined"));
-        return NULL;
-    }
+    virDomainDiskDefPtr disk = NULL;
 
     if (def->os.bootloader == NULL) {
-        disk = def->disks[0];
+        disk = virBhyveGetBootDisk(conn, def);
 
-        if (!virBhyveUsableDisk(conn, disk))
+        if (disk == NULL)
             return NULL;
 
         return virBhyveProcessBuildBhyveloadCmd(def, disk);

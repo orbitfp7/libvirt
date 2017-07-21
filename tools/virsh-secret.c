@@ -1,7 +1,7 @@
 /*
  * virsh-secret.c: Commands to manage secret
  *
- * Copyright (C) 2005, 2007-2014 Red Hat, Inc.
+ * Copyright (C) 2005, 2007-2016 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -26,29 +26,21 @@
 #include <config.h>
 #include "virsh-secret.h"
 
-#include <libxml/parser.h>
-#include <libxml/tree.h>
-#include <libxml/xpath.h>
-#include <libxml/xmlsave.h>
-
 #include "internal.h"
 #include "base64.h"
 #include "virbuffer.h"
 #include "viralloc.h"
 #include "virfile.h"
 #include "virutil.h"
-#include "virxml.h"
 #include "conf/secret_conf.h"
 
 static virSecretPtr
-vshCommandOptSecret(vshControl *ctl, const vshCmd *cmd, const char **name)
+virshCommandOptSecret(vshControl *ctl, const vshCmd *cmd, const char **name)
 {
     virSecretPtr secret = NULL;
     const char *n = NULL;
     const char *optname = "secret";
-
-    if (!vshCmdHasOption(ctl, cmd, optname))
-        return NULL;
+    virshControlPtr priv = ctl->privData;
 
     if (vshCommandOptStringReq(ctl, cmd, optname, &n) < 0)
         return NULL;
@@ -59,7 +51,7 @@ vshCommandOptSecret(vshControl *ctl, const vshCmd *cmd, const char **name)
     if (name != NULL)
         *name = n;
 
-    secret = virSecretLookupByUUIDString(ctl->conn, n);
+    secret = virSecretLookupByUUIDString(priv->conn, n);
 
     if (secret == NULL)
         vshError(ctl, _("failed to get secret '%s'"), n);
@@ -81,11 +73,7 @@ static const vshCmdInfo info_secret_define[] = {
 };
 
 static const vshCmdOptDef opts_secret_define[] = {
-    {.name = "file",
-     .type = VSH_OT_DATA,
-     .flags = VSH_OFLAG_REQ,
-     .help = N_("file containing secret attributes in XML")
-    },
+    VIRSH_COMMON_OPT_FILE(N_("file containing secret attributes in XML")),
     {.name = NULL}
 };
 
@@ -97,6 +85,7 @@ cmdSecretDefine(vshControl *ctl, const vshCmd *cmd)
     virSecretPtr res;
     char uuid[VIR_UUID_STRING_BUFLEN];
     bool ret = false;
+    virshControlPtr priv = ctl->privData;
 
     if (vshCommandOptStringReq(ctl, cmd, "file", &from) < 0)
         return false;
@@ -104,7 +93,7 @@ cmdSecretDefine(vshControl *ctl, const vshCmd *cmd)
     if (virFileReadAll(from, VSH_MAX_XML_FILE, &buffer) < 0)
         return false;
 
-    if (!(res = virSecretDefineXML(ctl->conn, buffer, 0))) {
+    if (!(res = virSecretDefineXML(priv->conn, buffer, 0))) {
         vshError(ctl, _("Failed to set attributes from %s"), from);
         goto cleanup;
     }
@@ -153,7 +142,7 @@ cmdSecretDumpXML(vshControl *ctl, const vshCmd *cmd)
     bool ret = false;
     char *xml;
 
-    secret = vshCommandOptSecret(ctl, cmd, NULL);
+    secret = virshCommandOptSecret(ctl, cmd, NULL);
     if (secret == NULL)
         return false;
 
@@ -206,7 +195,7 @@ cmdSecretSetValue(vshControl *ctl, const vshCmd *cmd)
     int res;
     bool ret = false;
 
-    if (!(secret = vshCommandOptSecret(ctl, cmd, NULL)))
+    if (!(secret = virshCommandOptSecret(ctl, cmd, NULL)))
         return false;
 
     if (vshCommandOptStringReq(ctl, cmd, "base64", &base64) < 0)
@@ -268,7 +257,7 @@ cmdSecretGetValue(vshControl *ctl, const vshCmd *cmd)
     size_t value_size;
     bool ret = false;
 
-    secret = vshCommandOptSecret(ctl, cmd, NULL);
+    secret = virshCommandOptSecret(ctl, cmd, NULL);
     if (secret == NULL)
         return false;
 
@@ -323,7 +312,7 @@ cmdSecretUndefine(vshControl *ctl, const vshCmd *cmd)
     bool ret = false;
     const char *uuid;
 
-    secret = vshCommandOptSecret(ctl, cmd, &uuid);
+    secret = virshCommandOptSecret(ctl, cmd, &uuid);
     if (secret == NULL)
         return false;
 
@@ -340,7 +329,7 @@ cmdSecretUndefine(vshControl *ctl, const vshCmd *cmd)
 }
 
 static int
-vshSecretSorter(const void *a, const void *b)
+virshSecretSorter(const void *a, const void *b)
 {
     virSecretPtr *sa = (virSecretPtr *) a;
     virSecretPtr *sb = (virSecretPtr *) b;
@@ -359,14 +348,14 @@ vshSecretSorter(const void *a, const void *b)
     return vshStrcasecmp(uuid_sa, uuid_sb);
 }
 
-struct vshSecretList {
+struct virshSecretList {
     virSecretPtr *secrets;
     size_t nsecrets;
 };
-typedef struct vshSecretList *vshSecretListPtr;
+typedef struct virshSecretList *virshSecretListPtr;
 
 static void
-vshSecretListFree(vshSecretListPtr list)
+virshSecretListFree(virshSecretListPtr list)
 {
     size_t i;
 
@@ -380,11 +369,11 @@ vshSecretListFree(vshSecretListPtr list)
     VIR_FREE(list);
 }
 
-static vshSecretListPtr
-vshSecretListCollect(vshControl *ctl,
-                     unsigned int flags)
+static virshSecretListPtr
+virshSecretListCollect(vshControl *ctl,
+                       unsigned int flags)
 {
-    vshSecretListPtr list = vshMalloc(ctl, sizeof(*list));
+    virshSecretListPtr list = vshMalloc(ctl, sizeof(*list));
     size_t i;
     int ret;
     virSecretPtr secret;
@@ -392,9 +381,10 @@ vshSecretListCollect(vshControl *ctl,
     size_t deleted = 0;
     int nsecrets = 0;
     char **uuids = NULL;
+    virshControlPtr priv = ctl->privData;
 
     /* try the list with flags support (0.10.2 and later) */
-    if ((ret = virConnectListAllSecrets(ctl->conn,
+    if ((ret = virConnectListAllSecrets(priv->conn,
                                         &list->secrets,
                                         flags)) >= 0) {
         list->nsecrets = ret;
@@ -419,7 +409,7 @@ vshSecretListCollect(vshControl *ctl,
         goto cleanup;
     }
 
-    nsecrets = virConnectNumOfSecrets(ctl->conn);
+    nsecrets = virConnectNumOfSecrets(priv->conn);
     if (nsecrets < 0) {
         vshError(ctl, "%s", _("Failed to count secrets"));
         goto cleanup;
@@ -430,7 +420,7 @@ vshSecretListCollect(vshControl *ctl,
 
     uuids = vshMalloc(ctl, sizeof(char *) * nsecrets);
 
-    nsecrets = virConnectListSecrets(ctl->conn, uuids, nsecrets);
+    nsecrets = virConnectListSecrets(priv->conn, uuids, nsecrets);
     if (nsecrets < 0) {
         vshError(ctl, "%s", _("Failed to list secrets"));
         goto cleanup;
@@ -441,7 +431,7 @@ vshSecretListCollect(vshControl *ctl,
 
     /* get the secrets */
     for (i = 0; i < nsecrets; i++) {
-        if (!(secret = virSecretLookupByUUIDString(ctl->conn, uuids[i])))
+        if (!(secret = virSecretLookupByUUIDString(priv->conn, uuids[i])))
             continue;
         list->secrets[list->nsecrets++] = secret;
     }
@@ -453,7 +443,7 @@ vshSecretListCollect(vshControl *ctl,
     /* sort the list */
     if (list->secrets && list->nsecrets)
         qsort(list->secrets, list->nsecrets,
-              sizeof(*list->secrets), vshSecretSorter);
+              sizeof(*list->secrets), virshSecretSorter);
 
     /* truncate the list for not found secret objects */
     if (deleted)
@@ -469,7 +459,7 @@ vshSecretListCollect(vshControl *ctl,
     }
 
     if (!success) {
-        vshSecretListFree(list);
+        virshSecretListFree(list);
         list = NULL;
     }
 
@@ -513,7 +503,7 @@ static bool
 cmdSecretList(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
 {
     size_t i;
-    vshSecretListPtr list = NULL;
+    virshSecretListPtr list = NULL;
     bool ret = false;
     unsigned int flags = 0;
 
@@ -529,7 +519,7 @@ cmdSecretList(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
     if (vshCommandOptBool(cmd, "no-private"))
         flags |= VIR_CONNECT_LIST_SECRETS_NO_PRIVATE;
 
-    if (!(list = vshSecretListCollect(ctl, flags)))
+    if (!(list = virshSecretListCollect(ctl, flags)))
         return false;
 
     vshPrintExtra(ctl, " %-36s  %s\n", _("UUID"), _("Usage"));
@@ -560,7 +550,7 @@ cmdSecretList(vshControl *ctl, const vshCmd *cmd ATTRIBUTE_UNUSED)
     ret = true;
 
  cleanup:
-    vshSecretListFree(list);
+    virshSecretListFree(list);
     return ret;
 }
 

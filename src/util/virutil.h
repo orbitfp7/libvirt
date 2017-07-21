@@ -25,10 +25,8 @@
 #ifndef __VIR_UTIL_H__
 # define __VIR_UTIL_H__
 
-# include "verify.h"
 # include "internal.h"
 # include <unistd.h>
-# include <sys/select.h>
 # include <sys/types.h>
 
 # ifndef MIN
@@ -69,6 +67,7 @@ int virDoubleToStr(char **strp, double number)
 char *virFormatIntDecimal(char *buf, size_t buflen, int val)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
+int virDiskNameParse(const char *name, int *disk, int *partition);
 int virDiskNameToIndex(const char* str);
 char *virIndexToDiskName(int idx, const char *prefix);
 
@@ -133,6 +132,7 @@ static inline int pthread_sigmask(int how,
 # endif
 
 char *virGetHostname(void);
+char *virGetHostnameQuiet(void);
 
 char *virGetUserDirectory(void);
 char *virGetUserDirectoryByUID(uid_t uid);
@@ -210,8 +210,6 @@ char *virGetFCHostNameByWWN(const char *sysfs_prefix,
 
 char *virFindFCHostCapableVport(const char *sysfs_prefix);
 
-int virCompareLimitUlong(unsigned long long a, unsigned long long b);
-
 int virParseOwnershipIds(const char *label, uid_t *uidPtr, gid_t *gidPtr);
 
 const char *virGetEnvBlockSUID(const char *name);
@@ -246,5 +244,20 @@ unsigned int virGetListenFDs(void);
 
 long virGetSystemPageSize(void);
 long virGetSystemPageSizeKB(void);
+
+unsigned long long virMemoryLimitTruncate(unsigned long long value);
+bool virMemoryLimitIsSet(unsigned long long value);
+unsigned long long virMemoryMaxValue(bool ulong);
+
+/**
+ * VIR_ASSIGN_IS_OVERFLOW:
+ * @rvalue: value that is checked (evaluated twice)
+ * @lvalue: value that the check is against (used in typeof())
+ *
+ * This macro assigns @lvalue to @rvalue and evaluates as true if the value of
+ * @rvalue did not fit into the @lvalue.
+ */
+# define VIR_ASSIGN_IS_OVERFLOW(lvalue, rvalue)                                \
+    (((lvalue) = (rvalue)) != (rvalue))
 
 #endif /* __VIR_UTIL_H__ */

@@ -55,6 +55,8 @@ static virClassPtr virDomainEventPMClass;
 static virClassPtr virDomainQemuMonitorEventClass;
 static virClassPtr virDomainEventTunableClass;
 static virClassPtr virDomainEventAgentLifecycleClass;
+static virClassPtr virDomainEventDeviceAddedClass;
+static virClassPtr virDomainEventMigrationIterationClass;
 
 
 static void virDomainEventDispose(void *obj);
@@ -72,6 +74,8 @@ static void virDomainEventPMDispose(void *obj);
 static void virDomainQemuMonitorEventDispose(void *obj);
 static void virDomainEventTunableDispose(void *obj);
 static void virDomainEventAgentLifecycleDispose(void *obj);
+static void virDomainEventDeviceAddedDispose(void *obj);
+static void virDomainEventMigrationIterationDispose(void *obj);
 
 static void
 virDomainEventDispatchDefaultFunc(virConnectPtr conn,
@@ -189,6 +193,14 @@ struct _virDomainEventDeviceRemoved {
 typedef struct _virDomainEventDeviceRemoved virDomainEventDeviceRemoved;
 typedef virDomainEventDeviceRemoved *virDomainEventDeviceRemovedPtr;
 
+struct _virDomainEventDeviceAdded {
+    virDomainEvent parent;
+
+    char *devAlias;
+};
+typedef struct _virDomainEventDeviceAdded virDomainEventDeviceAdded;
+typedef virDomainEventDeviceAdded *virDomainEventDeviceAddedPtr;
+
 struct _virDomainEventPM {
     virDomainEvent parent;
 
@@ -225,6 +237,14 @@ struct _virDomainEventAgentLifecycle {
 };
 typedef struct _virDomainEventAgentLifecycle virDomainEventAgentLifecycle;
 typedef virDomainEventAgentLifecycle *virDomainEventAgentLifecyclePtr;
+
+struct _virDomainEventMigrationIteration {
+    virDomainEvent parent;
+
+    int iteration;
+};
+typedef struct _virDomainEventMigrationIteration virDomainEventMigrationIteration;
+typedef virDomainEventMigrationIteration *virDomainEventMigrationIterationPtr;
 
 
 static int
@@ -296,6 +316,12 @@ virDomainEventsOnceInit(void)
                       sizeof(virDomainEventDeviceRemoved),
                       virDomainEventDeviceRemovedDispose)))
         return -1;
+    if (!(virDomainEventDeviceAddedClass =
+          virClassNew(virDomainEventClass,
+                      "virDomainEventDeviceAdded",
+                      sizeof(virDomainEventDeviceAdded),
+                      virDomainEventDeviceAddedDispose)))
+        return -1;
     if (!(virDomainEventPMClass =
           virClassNew(virDomainEventClass,
                       "virDomainEventPM",
@@ -319,6 +345,12 @@ virDomainEventsOnceInit(void)
                       "virDomainEventAgentLifecycle",
                       sizeof(virDomainEventAgentLifecycle),
                       virDomainEventAgentLifecycleDispose)))
+        return -1;
+    if (!(virDomainEventMigrationIterationClass =
+          virClassNew(virDomainEventClass,
+                      "virDomainEventMigrationIteration",
+                      sizeof(virDomainEventMigrationIteration),
+                      virDomainEventMigrationIterationDispose)))
         return -1;
     return 0;
 }
@@ -439,6 +471,15 @@ virDomainEventDeviceRemovedDispose(void *obj)
 }
 
 static void
+virDomainEventDeviceAddedDispose(void *obj)
+{
+    virDomainEventDeviceAddedPtr event = obj;
+    VIR_DEBUG("obj=%p", event);
+
+    VIR_FREE(event->devAlias);
+}
+
+static void
 virDomainEventPMDispose(void *obj)
 {
     virDomainEventPMPtr event = obj;
@@ -468,6 +509,13 @@ static void
 virDomainEventAgentLifecycleDispose(void *obj)
 {
     virDomainEventAgentLifecyclePtr event = obj;
+    VIR_DEBUG("obj=%p", event);
+};
+
+static void
+virDomainEventMigrationIterationDispose(void *obj)
+{
+    virDomainEventMigrationIterationPtr event = obj;
     VIR_DEBUG("obj=%p", event);
 };
 
@@ -1226,6 +1274,47 @@ virDomainEventDeviceRemovedNewFromDom(virDomainPtr dom,
                                           devAlias);
 }
 
+static virObjectEventPtr
+virDomainEventDeviceAddedNew(int id,
+                             const char *name,
+                             unsigned char *uuid,
+                             const char *devAlias)
+{
+    virDomainEventDeviceAddedPtr ev;
+
+    if (virDomainEventsInitialize() < 0)
+        return NULL;
+
+    if (!(ev = virDomainEventNew(virDomainEventDeviceAddedClass,
+                                 VIR_DOMAIN_EVENT_ID_DEVICE_ADDED,
+                                 id, name, uuid)))
+        return NULL;
+
+    if (VIR_STRDUP(ev->devAlias, devAlias) < 0)
+        goto error;
+
+    return (virObjectEventPtr)ev;
+
+ error:
+    virObjectUnref(ev);
+    return NULL;
+}
+
+virObjectEventPtr
+virDomainEventDeviceAddedNewFromObj(virDomainObjPtr obj,
+                                       const char *devAlias)
+{
+    return virDomainEventDeviceAddedNew(obj->def->id, obj->def->name,
+                                           obj->def->uuid, devAlias);
+}
+
+virObjectEventPtr
+virDomainEventDeviceAddedNewFromDom(virDomainPtr dom,
+                                      const char *devAlias)
+{
+    return virDomainEventDeviceAddedNew(dom->id, dom->name, dom->uuid,
+                                          devAlias);
+}
 
 static virObjectEventPtr
 virDomainEventAgentLifecycleNew(int id,
@@ -1266,6 +1355,43 @@ virDomainEventAgentLifecycleNewFromDom(virDomainPtr dom,
 {
     return virDomainEventAgentLifecycleNew(dom->id, dom->name, dom->uuid,
                                            state, reason);
+}
+
+static virObjectEventPtr
+virDomainEventMigrationIterationNew(int id,
+                                    const char *name,
+                                    const unsigned char *uuid,
+                                    int iteration)
+{
+    virDomainEventMigrationIterationPtr ev;
+
+    if (virDomainEventsInitialize() < 0)
+        return NULL;
+
+    if (!(ev = virDomainEventNew(virDomainEventMigrationIterationClass,
+                                 VIR_DOMAIN_EVENT_ID_MIGRATION_ITERATION,
+                                 id, name, uuid)))
+        return NULL;
+
+    ev->iteration = iteration;
+
+    return (virObjectEventPtr)ev;
+}
+
+virObjectEventPtr
+virDomainEventMigrationIterationNewFromObj(virDomainObjPtr obj,
+                                           int iteration)
+{
+    return virDomainEventMigrationIterationNew(obj->def->id, obj->def->name,
+                                               obj->def->uuid, iteration);
+}
+
+virObjectEventPtr
+virDomainEventMigrationIterationNewFromDom(virDomainPtr dom,
+                                           int iteration)
+{
+    return virDomainEventMigrationIterationNew(dom->id, dom->name, dom->uuid,
+                                               iteration);
 }
 
 
@@ -1534,6 +1660,28 @@ virDomainEventDispatchDefaultFunc(virConnectPtr conn,
                                                               agentLifecycleEvent->state,
                                                               agentLifecycleEvent->reason,
                                                               cbopaque);
+            goto cleanup;
+        }
+
+    case VIR_DOMAIN_EVENT_ID_DEVICE_ADDED:
+        {
+            virDomainEventDeviceAddedPtr deviceAddedEvent;
+
+            deviceAddedEvent = (virDomainEventDeviceAddedPtr)event;
+            ((virConnectDomainEventDeviceAddedCallback)cb)(conn, dom,
+                                                           deviceAddedEvent->devAlias,
+                                                           cbopaque);
+            goto cleanup;
+        }
+
+    case VIR_DOMAIN_EVENT_ID_MIGRATION_ITERATION:
+        {
+            virDomainEventMigrationIterationPtr ev;
+
+            ev = (virDomainEventMigrationIterationPtr) event;
+            ((virConnectDomainEventMigrationIterationCallback)cb)(conn, dom,
+                                                                  ev->iteration,
+                                                                  cbopaque);
             goto cleanup;
         }
 

@@ -73,6 +73,7 @@ struct _virLockManagerSanlockDriver {
     int hostID;
     bool autoDiskLease;
     char *autoDiskLeasePath;
+    unsigned int io_timeout;
 
     /* under which permissions does sanlock run */
     uid_t user;
@@ -150,6 +151,10 @@ static int virLockManagerSanlockLoadConfig(const char *configFile)
         driver->requireLeaseForDisks = p->l;
     else
         driver->requireLeaseForDisks = !driver->autoDiskLease;
+
+    p = virConfGetValue(conf, "io_timeout");
+    CHECK_TYPE("io_timeout", VIR_CONF_ULONG);
+    if (p) driver->io_timeout = p->l;
 
     p = virConfGetValue(conf, "user");
     CHECK_TYPE("user", VIR_CONF_STRING);
@@ -338,7 +343,17 @@ static int virLockManagerSanlockSetupLockspace(void)
      * or we can fallback to polling.
      */
  retry:
-    if ((rv = sanlock_add_lockspace(&ls, 0)) < 0) {
+#ifdef HAVE_SANLOCK_ADD_LOCKSPACE_TIMEOUT
+    rv = sanlock_add_lockspace_timeout(&ls, 0, driver->io_timeout);
+#else
+    if (driver->io_timeout) {
+        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                       _("unable to use io_timeout with this version of sanlock"));
+        goto error;
+    }
+    rv = sanlock_add_lockspace(&ls, 0);
+#endif
+    if (rv < 0) {
         if (-rv == EINPROGRESS && --retries) {
 #ifdef HAVE_SANLOCK_INQ_LOCKSPACE
             /* we have this function which blocks until lockspace change the
@@ -404,6 +419,7 @@ static int virLockManagerSanlockInit(unsigned int version,
     driver->requireLeaseForDisks = true;
     driver->hostID = 0;
     driver->autoDiskLease = false;
+    driver->io_timeout = 0;
     driver->user = (uid_t) -1;
     driver->group = (gid_t) -1;
     if (VIR_STRDUP(driver->autoDiskLeasePath, LOCALSTATEDIR "/lib/libvirt/sanlock") < 0) {
@@ -455,7 +471,7 @@ static int virLockManagerSanlockNew(virLockManagerPtr lock,
     size_t i;
     int resCount = 0;
 
-    virCheckFlags(0, -1);
+    virCheckFlags(VIR_LOCK_MANAGER_NEW_STARTED, -1);
 
     if (!driver) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -497,8 +513,11 @@ static int virLockManagerSanlockNew(virLockManagerPtr lock,
      * if it returns any other error (rv < 0), then we cannot fail due
      * to back-compat.  So this whole call is non-fatal, because it's
      * called from all over the place (it will usually fail).  It merely
-     * updates privateData. */
-    if (sanlock_inquire(-1, priv->vm_pid, 0, &resCount, NULL) >= 0)
+     * updates privateData.
+     * If the process has just been started, we are pretty sure it is not
+     * registered. */
+    if (!(flags & VIR_LOCK_MANAGER_NEW_STARTED) &&
+        sanlock_inquire(-1, priv->vm_pid, 0, &resCount, NULL) >= 0)
         priv->registered = true;
 
     lock->privateData = priv;
@@ -972,7 +991,7 @@ static int virLockManagerSanlockAcquire(virLockManagerPtr lock,
                                   priv->res_count, priv->res_args,
                                   opt)) < 0) {
             if (rv <= -200)
-                virReportError(VIR_ERR_INTERNAL_ERROR,
+                virReportError(VIR_ERR_RESOURCE_BUSY,
                                _("Failed to acquire lock: error %d"), rv);
             else
                 virReportSystemError(-rv, "%s",

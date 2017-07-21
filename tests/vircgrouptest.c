@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013-2014 Red Hat, Inc.
+ * Copyright (C) 2013-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -32,6 +32,7 @@
 # include "virerror.h"
 # include "virlog.h"
 # include "virfile.h"
+# include "virbuffer.h"
 # include "testutilslxc.h"
 # include "nodeinfo.h"
 
@@ -156,6 +157,51 @@ const char *linksLogind[VIR_CGROUP_CONTROLLER_LAST] = {
     [VIR_CGROUP_CONTROLLER_BLKIO] = NULL,
     [VIR_CGROUP_CONTROLLER_SYSTEMD] = NULL,
 };
+
+
+static int
+testCgroupDetectMounts(const void *args)
+{
+    int result = -1;
+    const char *file = args;
+    char *mounts = NULL;
+    char *parsed = NULL;
+    const char *actual;
+    virCgroupPtr group = NULL;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    size_t i;
+
+    if (virAsprintf(&mounts, "%s/vircgroupdata/%s.mounts",
+                    abs_srcdir, file) < 0 ||
+        virAsprintf(&parsed, "%s/vircgroupdata/%s.parsed",
+                    abs_srcdir, file) < 0 ||
+        VIR_ALLOC(group) < 0)
+        goto cleanup;
+
+    if (virCgroupDetectMountsFromFile(group, mounts, false) < 0)
+        goto cleanup;
+
+    for (i = 0; i < VIR_CGROUP_CONTROLLER_LAST; i++) {
+        virBufferAsprintf(&buf, "%-12s %s\n",
+                          virCgroupControllerTypeToString(i),
+                          NULLSTR(group->controllers[i].mountPoint));
+    }
+    if (virBufferCheckError(&buf) < 0)
+        goto cleanup;
+
+    actual = virBufferCurrentContent(&buf);
+    if (virtTestCompareToFile(actual, parsed) < 0)
+        goto cleanup;
+
+    result = 0;
+
+ cleanup:
+    VIR_FREE(mounts);
+    VIR_FREE(parsed);
+    virCgroupFree(&group);
+    virBufferFreeAndReset(&buf);
+    return result;
+}
 
 
 static int testCgroupNewForSelf(const void *args ATTRIBUTE_UNUSED)
@@ -533,6 +579,34 @@ static int testCgroupAvailable(const void *args)
     return 0;
 }
 
+static int testCgroupControllerAvailable(const void *args ATTRIBUTE_UNUSED)
+{
+    int ret = 0;
+
+# define CHECK_CONTROLLER(c, present)                                   \
+    if ((present && !virCgroupControllerAvailable(c)) ||                \
+        (!present && virCgroupControllerAvailable(c))) {                \
+        fprintf(stderr, present ?                                       \
+                "Expected controller %s not available\n" :              \
+                "Unexpected controller %s available\n", #c);            \
+        ret = -1;                                                       \
+    }
+
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_CPU, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_CPUACCT, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_CPUSET, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_MEMORY, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_DEVICES, false)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_FREEZER, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_BLKIO, true)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_NET_CLS, false)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_PERF_EVENT, false)
+    CHECK_CONTROLLER(VIR_CGROUP_CONTROLLER_SYSTEMD, true)
+
+# undef CHECK_CONTROLLER
+    return ret;
+}
+
 static int testCgroupGetPercpuStats(const void *args ATTRIBUTE_UNUSED)
 {
     virCgroupPtr cgroup = NULL;
@@ -543,25 +617,25 @@ static int testCgroupGetPercpuStats(const void *args ATTRIBUTE_UNUSED)
 
     unsigned long long expected[EXPECTED_NCPUS] = {
         0, 0, 0, 0, 0, 0, 0, 0,
-        7059492996, 0, 0, 0, 0, 0, 0, 0,
-        4180532496, 0, 0, 0, 0, 0, 0, 0,
+        7059492996ULL, 0, 0, 0, 0, 0, 0, 0,
+        4180532496ULL, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0,
-        1957541268, 0, 0, 0, 0, 0, 0, 0,
-        2065932204, 0, 0, 0, 0, 0, 0, 0,
-        18228689414, 0, 0, 0, 0, 0, 0, 0,
-        4245525148, 0, 0, 0, 0, 0, 0, 0,
-        2911161568, 0, 0, 0, 0, 0, 0, 0,
-        1407758136, 0, 0, 0, 0, 0, 0, 0,
-        1836807700, 0, 0, 0, 0, 0, 0, 0,
-        1065296618, 0, 0, 0, 0, 0, 0, 0,
-        2046213266, 0, 0, 0, 0, 0, 0, 0,
-        747889778, 0, 0, 0, 0, 0, 0, 0,
-        709566900, 0, 0, 0, 0, 0, 0, 0,
-        444777342, 0, 0, 0, 0, 0, 0, 0,
-        5683512916, 0, 0, 0, 0, 0, 0, 0,
-        635751356, 0, 0, 0, 0, 0, 0, 0,
+        1957541268ULL, 0, 0, 0, 0, 0, 0, 0,
+        2065932204ULL, 0, 0, 0, 0, 0, 0, 0,
+        18228689414ULL, 0, 0, 0, 0, 0, 0, 0,
+        4245525148ULL, 0, 0, 0, 0, 0, 0, 0,
+        2911161568ULL, 0, 0, 0, 0, 0, 0, 0,
+        1407758136ULL, 0, 0, 0, 0, 0, 0, 0,
+        1836807700ULL, 0, 0, 0, 0, 0, 0, 0,
+        1065296618ULL, 0, 0, 0, 0, 0, 0, 0,
+        2046213266ULL, 0, 0, 0, 0, 0, 0, 0,
+        747889778ULL, 0, 0, 0, 0, 0, 0, 0,
+        709566900ULL, 0, 0, 0, 0, 0, 0, 0,
+        444777342ULL, 0, 0, 0, 0, 0, 0, 0,
+        5683512916ULL, 0, 0, 0, 0, 0, 0, 0,
+        635751356ULL, 0, 0, 0, 0, 0, 0, 0,
     };
 
     if (VIR_ALLOC_N(params, EXPECTED_NCPUS) < 0)
@@ -575,20 +649,20 @@ static int testCgroupGetPercpuStats(const void *args ATTRIBUTE_UNUSED)
         goto cleanup;
     }
 
-    if (nodeGetCPUCount() != EXPECTED_NCPUS) {
-        fprintf(stderr, "Unexpected: nodeGetCPUCount() yields: %d\n", nodeGetCPUCount());
+    if (nodeGetCPUCount(NULL) != EXPECTED_NCPUS) {
+        fprintf(stderr, "Unexpected: nodeGetCPUCount() yields: %d\n", nodeGetCPUCount(NULL));
         goto cleanup;
     }
 
     if ((rv = virCgroupGetPercpuStats(cgroup,
                                       params,
-                                      1, 0, EXPECTED_NCPUS, 0)) < 0) {
+                                      1, 0, EXPECTED_NCPUS, NULL)) < 0) {
         fprintf(stderr, "Failed call to virCgroupGetPercpuStats for /virtualmachines cgroup: %d\n", -rv);
         goto cleanup;
     }
 
     for (i = 0; i < EXPECTED_NCPUS; i++) {
-        if (!STREQ(params[i].field, VIR_DOMAIN_CPU_STATS_CPUTIME)) {
+        if (STRNEQ(params[i].field, VIR_DOMAIN_CPU_STATS_CPUTIME)) {
             fprintf(stderr,
                     "Wrong parameter name value from virCgroupGetPercpuStats at %zu (is: %s)\n",
                     i, params[i].field);
@@ -773,25 +847,44 @@ static int testCgroupGetBlkioIoDeviceServiced(const void *args ATTRIBUTE_UNUSED)
     return ret;
 }
 
-# define FAKESYSFSDIRTEMPLATE abs_builddir "/fakesysfsdir-XXXXXX"
+# define FAKEROOTDIRTEMPLATE abs_builddir "/fakerootdir-XXXXXX"
 
 static int
 mymain(void)
 {
     int ret = 0;
-    char *fakesysfsdir;
+    char *fakerootdir;
 
-    if (VIR_STRDUP_QUIET(fakesysfsdir, FAKESYSFSDIRTEMPLATE) < 0) {
+    if (VIR_STRDUP_QUIET(fakerootdir, FAKEROOTDIRTEMPLATE) < 0) {
         fprintf(stderr, "Out of memory\n");
         abort();
     }
 
-    if (!mkdtemp(fakesysfsdir)) {
-        fprintf(stderr, "Cannot create fakesysfsdir");
+    if (!mkdtemp(fakerootdir)) {
+        fprintf(stderr, "Cannot create fakerootdir");
         abort();
     }
 
-    setenv("LIBVIRT_FAKE_SYSFS_DIR", fakesysfsdir, 1);
+    setenv("LIBVIRT_FAKE_ROOT_DIR", fakerootdir, 1);
+
+# define DETECT_MOUNTS(file)                                            \
+    do {                                                                \
+        if (virtTestRun("Detect cgroup mounts for " file,               \
+                        testCgroupDetectMounts,                         \
+                        file) < 0)                                      \
+            ret = -1;                                                   \
+    } while (0)
+
+    DETECT_MOUNTS("ovirt-node-6.6");
+    DETECT_MOUNTS("ovirt-node-7.1");
+    DETECT_MOUNTS("fedora-18");
+    DETECT_MOUNTS("fedora-21");
+    DETECT_MOUNTS("rhel-7.1");
+    DETECT_MOUNTS("cgroups1");
+    DETECT_MOUNTS("cgroups2");
+    DETECT_MOUNTS("cgroups3");
+    DETECT_MOUNTS("all-in-one");
+    DETECT_MOUNTS("no-cgroups");
 
     if (virtTestRun("New cgroup for self", testCgroupNewForSelf, NULL) < 0)
         ret = -1;
@@ -812,6 +905,9 @@ mymain(void)
         ret = -1;
 
     if (virtTestRun("Cgroup available", testCgroupAvailable, (void*)0x1) < 0)
+        ret = -1;
+
+    if (virtTestRun("Cgroup controller available", testCgroupControllerAvailable, NULL) < 0)
         ret = -1;
 
     if (virtTestRun("virCgroupGetBlkioIoServiced works", testCgroupGetBlkioIoServiced, NULL) < 0)
@@ -841,9 +937,9 @@ mymain(void)
     unsetenv("VIR_CGROUP_MOCK_MODE");
 
     if (getenv("LIBVIRT_SKIP_CLEANUP") == NULL)
-        virFileDeleteTree(fakesysfsdir);
+        virFileDeleteTree(fakerootdir);
 
-    VIR_FREE(fakesysfsdir);
+    VIR_FREE(fakerootdir);
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

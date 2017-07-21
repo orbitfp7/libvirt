@@ -194,9 +194,6 @@ testme "1" "-c with malformed xml" "-c -u $valid_uuid" "$test_xml"
 sed -e "s,###UUID###,$uuid,g" -e "s,###DISK###,$disk1,g" -e "s,<type arch='x86_64' machine='pc'>hvm</type>,,g" "$template_xml" > "$test_xml"
 testme "1" "-c with no os.type" "-c -u $valid_uuid" "$test_xml"
 
-sed -e "s,###UUID###,$uuid,g" -e "s,###DISK###,$disk1,g" -e "s,<type arch='x86_64' machine='pc'>hvm</type>,<type>hvm</type>,g" "$template_xml" > "$test_xml"
-testme "1" "-c with no architecture" "-c -u $valid_uuid" "$test_xml"
-
 sed -e "s,###UUID###,$uuid,g" -e "s,###DISK###,$disk1,g" -e "s,hvm</type>,hvm_invalid</type>,g" "$template_xml" > "$test_xml"
 testme "1" "-c with invalid hvm" "-c -u $valid_uuid" "$test_xml"
 
@@ -293,6 +290,15 @@ testme "0" "channel (pty)" "-r -u $valid_uuid" "$test_xml"
 sed -e "s,###UUID###,$uuid,g" -e "s,###DISK###,$disk1,g" -e "s,</os>,<kernel>$tmpdir/kernel</kernel></os>,g" "$template_xml" > "$test_xml"
 touch "$tmpdir/kernel"
 testme "0" "kernel" "-r -u $valid_uuid" "$test_xml"
+
+if [ -f /usr/share/ovmf/OVMF.fd ]; then
+    sed -e "s,###UUID###,$uuid,g"  \
+        -e "s,###DISK###,$disk1,g" \
+        -e "s,</os>,<loader readonly='yes' type='pflash'>/usr/share/ovmf/OVMF.fd</loader></os>,g" "$template_xml" > "$test_xml"
+    testme "0" "ovmf" "-r -u $valid_uuid" "$test_xml"
+else
+    echo "Skipping OVMF test. Could not find /usr/share/ovmf/OVMF.fd"
+fi
 
 sed -e "s,###UUID###,$uuid,g" -e "s,###DISK###,$disk1,g" -e "s,</os>,<initrd>$tmpdir/initrd</initrd></os>,g" "$template_xml" > "$test_xml"
 touch "$tmpdir/initrd"

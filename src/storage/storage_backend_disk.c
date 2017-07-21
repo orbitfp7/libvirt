@@ -1,7 +1,7 @@
 /*
  * storage_backend_disk.c: storage backend for disk handling
  *
- * Copyright (C) 2007-2014 Red Hat, Inc.
+ * Copyright (C) 2007-2016 Red Hat, Inc.
  * Copyright (C) 2007-2008 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -152,16 +152,32 @@ virStorageBackendDiskMakeDataVol(virStoragePoolObjPtr pool,
      * -1 was returned indicating some other error than an open error.
      */
     if (vol->source.partType == VIR_STORAGE_VOL_DISK_TYPE_EXTENDED) {
-        if (virStorageBackendUpdateVolInfo(vol, true, false,
+        if (virStorageBackendUpdateVolInfo(vol, false,
                                            VIR_STORAGE_VOL_OPEN_DEFAULT |
-                                           VIR_STORAGE_VOL_OPEN_NOERROR) == -1)
+                                           VIR_STORAGE_VOL_OPEN_NOERROR,
+                                           0) == -1)
             return -1;
-        vol->target.allocation = vol->target.capacity =
+        vol->target.allocation = 0;
+        vol->target.capacity =
             (vol->source.extents[0].end - vol->source.extents[0].start);
     } else {
-        if (virStorageBackendUpdateVolInfo(vol, true, false,
-                                           VIR_STORAGE_VOL_OPEN_DEFAULT) < 0)
+        if (virStorageBackendUpdateVolInfo(vol, false,
+                                           VIR_STORAGE_VOL_OPEN_DEFAULT, 0) < 0)
             return -1;
+    }
+
+    /* Find the extended partition and increase the allocation value */
+    if (vol->source.partType == VIR_STORAGE_VOL_DISK_TYPE_LOGICAL) {
+        size_t i;
+
+        for (i = 0; i < pool->volumes.count; i++) {
+            if (pool->volumes.objs[i]->source.partType ==
+                VIR_STORAGE_VOL_DISK_TYPE_EXTENDED) {
+                pool->volumes.objs[i]->target.allocation +=
+                    vol->target.allocation;
+                break;
+            }
+        }
     }
 
     if (STRNEQ(groups[2], "metadata"))
@@ -309,7 +325,21 @@ virStorageBackendDiskReadPartitions(virStoragePoolObjPtr pool,
                                pool->def->source.devices[0].path,
                                NULL);
 
-    pool->def->allocation = pool->def->capacity = pool->def->available = 0;
+    /* Check for the presence of the part_separator='no'. Pass this
+     * along to the libvirt_parthelper as option '-p'. This will cause
+     * libvirt_parthelper to not append the "p" partition separator to
+     * the generated device name, unless the name ends with a number.
+     */
+    if (pool->def->source.devices[0].part_separator ==
+        VIR_TRISTATE_BOOL_NO)
+        virCommandAddArg(cmd, "-p");
+
+    /* If a volume is passed, virStorageBackendDiskMakeVol only updates the
+     * pool allocation for that single volume.
+     */
+    if (!vol)
+        pool->def->allocation = 0;
+    pool->def->capacity = pool->def->available = 0;
 
     ret = virCommandRunNul(cmd,
                            6,
@@ -391,7 +421,9 @@ virStorageBackendDiskRefreshPool(virConnectPtr conn ATTRIBUTE_UNUSED,
  * Check for a valid disk label (partition table) on device
  *
  * return: 0 - valid disk label found
- *        >0 - no or unrecognized disk label
+ *         1 - no or unrecognized disk label
+ *         2 - did not find the Partition Table type
+ *         3 - Partition Table type unknown
  *        <0 - error finding the disk label
  */
 static int
@@ -403,6 +435,7 @@ virStorageBackendDiskFindLabel(const char* device)
     virCommandPtr cmd = virCommandNew(PARTED);
     char *output = NULL;
     char *error = NULL;
+    char *start, *end;
     int ret = -1;
 
     virCommandAddArgSet(cmd, args);
@@ -413,16 +446,117 @@ virStorageBackendDiskFindLabel(const char* device)
     /* if parted succeeds we have a valid partition table */
     ret = virCommandRun(cmd, NULL);
     if (ret < 0) {
-        if (strstr(output, "unrecognised disk label") ||
-            strstr(error, "unrecognised disk label")) {
+        if ((output && strstr(output, "unrecognised disk label")) ||
+            (error && strstr(error, "unrecognised disk label"))) {
             ret = 1;
         }
+        goto cleanup;
     }
 
+    /* Search for "Partition Table:" in the output. If not present,
+     * then we cannot validate the partition table type.
+     */
+    if (!(start = strstr(output, "Partition Table: ")) ||
+        !(end = strstr(start, "\n"))) {
+        VIR_DEBUG("Unable to find tag in output: %s", output);
+        ret = 2;
+        goto cleanup;
+    }
+    start += strlen("Partition Table: ");
+    *end = '\0';
+
+    /* on disk it's "msdos", but we document/use "dos" so deal with it here */
+    if (STREQ(start, "msdos"))
+        start += 2;
+
+    /* Make sure we know about this type */
+    if (virStoragePoolFormatDiskTypeFromString(start) < 0) {
+        ret = 3;
+        goto cleanup;
+    }
+
+    ret = 0;
+
+ cleanup:
     virCommandFree(cmd);
     VIR_FREE(output);
     VIR_FREE(error);
     return ret;
+}
+
+/**
+ * Determine whether the label on the disk is valid or in a known format
+ * for the purpose of rewriting the label during build or being able to
+ * start a pool on a device.
+ *
+ * When 'writelabel' is true, if we find a valid disk label on the device,
+ * then we shouldn't be attempting to write as the volume may contain
+ * data. Force the usage of the overwrite flag to the build command in
+ * order to be certain. When the disk label is unrecognized, then it
+ * should be safe to write.
+ *
+ * When 'writelabel' is false, only if we find a valid disk label on the
+ * device should we allow the start since for this path we won't be
+ * rewriting the label.
+ *
+ * Return: True if it's OK
+ *         False if something's wrong
+ */
+static bool
+virStorageBackendDiskValidLabel(const char *device,
+                                bool writelabel)
+{
+    bool valid = false;
+    int check;
+
+    check = virStorageBackendDiskFindLabel(device);
+    if (check == 1) {
+        if (writelabel)
+            valid = true;
+        else
+            virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                           _("Unrecognized disk label found, requires build"));
+    } else if (check == 2) {
+        virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                       _("Unable to determine Partition Type, "
+                         "requires build --overwrite"));
+    } else if (check == 3) {
+        virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                       _("Unknown Partition Type, requires build --overwrite"));
+    } else if (check < 0) {
+        virReportError(VIR_ERR_OPERATION_FAILED, "%s",
+                       _("Error checking for disk label, failed to get "
+                         "disk partition information"));
+    } else {
+        if (writelabel)
+            virReportError(VIR_ERR_OPERATION_INVALID, "%s",
+                           _("Valid disk label already present, "
+                             "requires --overwrite"));
+        else
+            valid = true;
+    }
+    return valid;
+}
+
+
+static int
+virStorageBackendDiskStartPool(virConnectPtr conn ATTRIBUTE_UNUSED,
+                               virStoragePoolObjPtr pool)
+{
+    virFileWaitForDevices();
+
+    if (!virFileExists(pool->def->source.devices[0].path)) {
+        virReportError(VIR_ERR_INVALID_ARG,
+                       _("device path '%s' doesn't exist"),
+                       pool->def->source.devices[0].path);
+        return -1;
+    }
+
+    if (!virStorageBackendDiskValidLabel(pool->def->source.devices[0].path,
+                                         false))
+        return -1;
+
+    return 0;
 }
 
 
@@ -441,40 +575,33 @@ virStorageBackendDiskBuildPool(virConnectPtr conn ATTRIBUTE_UNUSED,
     virCheckFlags(VIR_STORAGE_POOL_BUILD_OVERWRITE |
                   VIR_STORAGE_POOL_BUILD_NO_OVERWRITE, ret);
 
-    if (flags == (VIR_STORAGE_POOL_BUILD_OVERWRITE |
-                  VIR_STORAGE_POOL_BUILD_NO_OVERWRITE)) {
-        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
-                       _("Overwrite and no overwrite flags"
-                         " are mutually exclusive"));
-        goto error;
-    }
+    VIR_EXCLUSIVE_FLAGS_GOTO(VIR_STORAGE_POOL_BUILD_OVERWRITE,
+                             VIR_STORAGE_POOL_BUILD_NO_OVERWRITE,
+                             error);
 
-    if (flags & VIR_STORAGE_POOL_BUILD_OVERWRITE) {
+    if (flags & VIR_STORAGE_POOL_BUILD_OVERWRITE)
         ok_to_mklabel = true;
-    } else {
-        int check;
-
-        check = virStorageBackendDiskFindLabel(
-                    pool->def->source.devices[0].path);
-        if (check > 0) {
-            ok_to_mklabel = true;
-        } else if (check < 0) {
-            virReportError(VIR_ERR_OPERATION_FAILED, "%s",
-                           _("Error checking for disk label"));
-        } else {
-            virReportError(VIR_ERR_OPERATION_INVALID, "%s",
-                           _("Disk label already present"));
-        }
-    }
+    else
+        ok_to_mklabel = virStorageBackendDiskValidLabel(
+                                            pool->def->source.devices[0].path,
+                                            true);
 
     if (ok_to_mklabel) {
-        /* eg parted /dev/sda mklabel msdos */
+        /* eg parted /dev/sda mklabel --script msdos */
+        int format = pool->def->source.format;
+        const char *fmt;
+        if (format == VIR_STORAGE_POOL_DISK_UNKNOWN)
+            format = pool->def->source.format = VIR_STORAGE_POOL_DISK_DOS;
+        if (format == VIR_STORAGE_POOL_DISK_DOS)
+            fmt = "msdos";
+        else
+            fmt = virStoragePoolFormatDiskTypeToString(format);
+
         cmd = virCommandNewArgList(PARTED,
                                    pool->def->source.devices[0].path,
                                    "mklabel",
                                    "--script",
-                                   ((pool->def->source.format == VIR_STORAGE_POOL_DISK_DOS) ? "msdos" :
-                                   virStoragePoolFormatDiskTypeToString(pool->def->source.format)),
+                                   fmt,
                                    NULL);
         ret = virCommandRun(cmd, NULL);
     }
@@ -739,14 +866,14 @@ virStorageBackendDiskDeleteVol(virConnectPtr conn,
             goto cleanup;
     }
 
-    /* If this was the extended partition, then all the logical partitions
-     * are then lost. Make it easy on ourselves and just refresh the pool
+    /* Refreshing the pool is the easiest option as LOGICAL and EXTENDED
+     * partition allocation/capacity management is handled within
+     * virStorageBackendDiskMakeDataVol and trying to redo that logic
+     * here is pointless
      */
-    if (vol->source.partType == VIR_STORAGE_VOL_DISK_TYPE_EXTENDED) {
-        virStoragePoolObjClearVols(pool);
-        if (virStorageBackendDiskRefreshPool(conn, pool) < 0)
-            goto cleanup;
-    }
+    virStoragePoolObjClearVols(pool);
+    if (virStorageBackendDiskRefreshPool(conn, pool) < 0)
+        goto cleanup;
 
     rc = 0;
  cleanup:
@@ -840,9 +967,28 @@ virStorageBackendDiskBuildVolFrom(virConnectPtr conn,
 }
 
 
+static int
+virStorageBackendDiskVolWipe(virConnectPtr conn,
+                             virStoragePoolObjPtr pool,
+                             virStorageVolDefPtr vol,
+                             unsigned int algorithm,
+                             unsigned int flags)
+{
+    if (vol->source.partType != VIR_STORAGE_VOL_DISK_TYPE_EXTENDED)
+        return virStorageBackendVolWipeLocal(conn, pool, vol, algorithm, flags);
+
+    /* Wiping an extended partition is not support */
+    virReportError(VIR_ERR_NO_SUPPORT,
+                   _("cannot wipe extended partition '%s'"),
+                   vol->target.path);
+    return -1;
+}
+
+
 virStorageBackend virStorageBackendDisk = {
     .type = VIR_STORAGE_POOL_DISK,
 
+    .startPool = virStorageBackendDiskStartPool,
     .buildPool = virStorageBackendDiskBuildPool,
     .refreshPool = virStorageBackendDiskRefreshPool,
 
@@ -851,5 +997,5 @@ virStorageBackend virStorageBackendDisk = {
     .buildVolFrom = virStorageBackendDiskBuildVolFrom,
     .uploadVol = virStorageBackendVolUploadLocal,
     .downloadVol = virStorageBackendVolDownloadLocal,
-    .wipeVol = virStorageBackendVolWipeLocal,
+    .wipeVol = virStorageBackendDiskVolWipe,
 };

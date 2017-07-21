@@ -62,6 +62,11 @@ int virBitmapClearBit(virBitmapPtr bitmap, size_t b)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
 /*
+ * Get bit @b in @bitmap. Returns false if b is out of range.
+ */
+bool virBitmapIsBitSet(virBitmapPtr bitmap, size_t b)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
+/*
  * Get setting of bit position @b in @bitmap and store in @result
  */
 int virBitmapGetBit(virBitmapPtr bitmap, size_t b, bool *result)
@@ -83,6 +88,9 @@ virBitmapPtr virBitmapNewCopy(virBitmapPtr src) ATTRIBUTE_NONNULL(1);
 virBitmapPtr virBitmapNewData(void *data, int len) ATTRIBUTE_NONNULL(1);
 
 int virBitmapToData(virBitmapPtr bitmap, unsigned char **data, int *dataLen)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
+
+void virBitmapToDataBuf(virBitmapPtr bitmap, unsigned char *data, size_t len)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 bool virBitmapEqual(virBitmapPtr b1, virBitmapPtr b2);
@@ -119,6 +127,9 @@ char *virBitmapDataToString(void *data,
     ATTRIBUTE_NONNULL(1);
 bool virBitmapOverlaps(virBitmapPtr b1,
                        virBitmapPtr b2)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+
+void virBitmapSubtract(virBitmapPtr a, virBitmapPtr b)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 #endif

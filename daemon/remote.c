@@ -1,7 +1,7 @@
 /*
  * remote.c: handlers for RPC method calls
  *
- * Copyright (C) 2007-2014 Red Hat, Inc.
+ * Copyright (C) 2007-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -51,6 +51,7 @@
 #include "viraccessapicheck.h"
 #include "viraccessapicheckqemu.h"
 #include "virpolkit.h"
+#include "virthreadjob.h"
 
 #define VIR_FROM_THIS VIR_FROM_RPC
 
@@ -100,19 +101,6 @@ static void make_nonnull_secret(remote_nonnull_secret *secret_dst, virSecretPtr 
 static void make_nonnull_nwfilter(remote_nonnull_nwfilter *net_dst, virNWFilterPtr nwfilter_src);
 static void make_nonnull_domain_snapshot(remote_nonnull_domain_snapshot *snapshot_dst, virDomainSnapshotPtr snapshot_src);
 
-static virTypedParameterPtr
-remoteDeserializeTypedParameters(remote_typed_param *args_params_val,
-                                 u_int args_params_len,
-                                 int limit,
-                                 int *nparams);
-
-static int
-remoteSerializeTypedParameters(virTypedParameterPtr params,
-                               int nparams,
-                               remote_typed_param **ret_params_val,
-                               u_int *ret_params_len,
-                               unsigned int flags);
-
 static int
 remoteSerializeDomainDiskErrors(virDomainDiskErrorPtr errors,
                                 int nerrors,
@@ -150,6 +138,7 @@ remoteRelayDomainEventCheckACL(virNetServerClientPtr client,
     /* For now, we just create a virDomainDef with enough contents to
      * satisfy what viraccessdriverpolkit.c references.  This is a bit
      * fragile, but I don't know of anything better.  */
+    memset(&def, 0, sizeof(def));
     def.name = dom->name;
     memcpy(def.uuid, dom->uuid, VIR_UUID_BUFLEN);
 
@@ -993,10 +982,10 @@ remoteRelayDomainEventTunable(virConnectPtr conn,
     data.callbackID = callback->callbackID;
     make_nonnull_domain(&data.dom, dom);
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &data.params.params_val,
-                                       &data.params.params_len,
-                                       VIR_TYPED_PARAM_STRING_OKAY) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &data.params.params_val,
+                                &data.params.params_len,
+                                VIR_TYPED_PARAM_STRING_OKAY) < 0)
         return -1;
 
     remoteDispatchObjectEventSend(callback->client, remoteProgram,
@@ -1043,6 +1032,73 @@ remoteRelayDomainEventAgentLifecycle(virConnectPtr conn,
 }
 
 
+static int
+remoteRelayDomainEventDeviceAdded(virConnectPtr conn,
+                                  virDomainPtr dom,
+                                  const char *devAlias,
+                                  void *opaque)
+{
+    daemonClientEventCallbackPtr callback = opaque;
+    remote_domain_event_callback_device_added_msg data;
+
+    if (callback->callbackID < 0 ||
+        !remoteRelayDomainEventCheckACL(callback->client, conn, dom))
+        return -1;
+
+    VIR_DEBUG("Relaying domain device added event %s %d %s, callback %d",
+              dom->name, dom->id, devAlias, callback->callbackID);
+
+    /* build return data */
+    memset(&data, 0, sizeof(data));
+
+    if (VIR_STRDUP(data.devAlias, devAlias) < 0)
+        return -1;
+
+    make_nonnull_domain(&data.dom, dom);
+    data.callbackID = callback->callbackID;
+
+    remoteDispatchObjectEventSend(callback->client, remoteProgram,
+                                  REMOTE_PROC_DOMAIN_EVENT_CALLBACK_DEVICE_ADDED,
+                                  (xdrproc_t)xdr_remote_domain_event_callback_device_added_msg,
+                                  &data);
+
+    return 0;
+}
+
+
+static int
+remoteRelayDomainEventMigrationIteration(virConnectPtr conn,
+                                         virDomainPtr dom,
+                                         int iteration,
+                                         void *opaque)
+{
+    daemonClientEventCallbackPtr callback = opaque;
+    remote_domain_event_callback_migration_iteration_msg data;
+
+    if (callback->callbackID < 0 ||
+        !remoteRelayDomainEventCheckACL(callback->client, conn, dom))
+        return -1;
+
+    VIR_DEBUG("Relaying domain migration pass event %s %d, "
+              "callback %d, iteration %d",
+              dom->name, dom->id, callback->callbackID, iteration);
+
+    /* build return data */
+    memset(&data, 0, sizeof(data));
+    data.callbackID = callback->callbackID;
+    make_nonnull_domain(&data.dom, dom);
+
+    data.iteration = iteration;
+
+    remoteDispatchObjectEventSend(callback->client, remoteProgram,
+                                  REMOTE_PROC_DOMAIN_EVENT_CALLBACK_MIGRATION_ITERATION,
+                                  (xdrproc_t)xdr_remote_domain_event_callback_migration_iteration_msg,
+                                  &data);
+
+    return 0;
+}
+
+
 static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventLifecycle),
     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventReboot),
@@ -1063,6 +1119,8 @@ static virConnectDomainEventGenericCallback domainEventCallbacks[] = {
     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventBlockJob2),
     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventTunable),
     VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventAgentLifecycle),
+    VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventDeviceAdded),
+    VIR_DOMAIN_EVENT_CALLBACK(remoteRelayDomainEventMigrationIteration),
 };
 
 verify(ARRAY_CARDINALITY(domainEventCallbacks) == VIR_DOMAIN_EVENT_ID_LAST);
@@ -1251,7 +1309,7 @@ void *remoteClientInitHook(virNetServerClientPtr client,
 /*----- Functions. -----*/
 
 static int
-remoteDispatchConnectOpen(virNetServerPtr server,
+remoteDispatchConnectOpen(virNetServerPtr server ATTRIBUTE_UNUSED,
                           virNetServerClientPtr client,
                           virNetMessagePtr msg ATTRIBUTE_UNUSED,
                           virNetMessageErrorPtr rerr,
@@ -1267,12 +1325,6 @@ remoteDispatchConnectOpen(virNetServerPtr server,
     /* Already opened? */
     if (priv->conn) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection already open"));
-        goto cleanup;
-    }
-
-    if (virNetServerKeepAliveRequired(server) && !priv->keepalive_supported) {
-        virReportError(VIR_ERR_OPERATION_FAILED, "%s",
-                       _("keepalive support is required to connect"));
         goto cleanup;
     }
 
@@ -1351,163 +1403,6 @@ remoteDispatchDomainGetSchedulerType(virNetServerPtr server ATTRIBUTE_UNUSED,
     return rv;
 }
 
-/* Helper to serialize typed parameters. This also filters out any string
- * parameters that must not be returned to older clients.  */
-static int
-remoteSerializeTypedParameters(virTypedParameterPtr params,
-                               int nparams,
-                               remote_typed_param **ret_params_val,
-                               u_int *ret_params_len,
-                               unsigned int flags)
-{
-    size_t i;
-    size_t j;
-    int rv = -1;
-    remote_typed_param *val;
-
-    *ret_params_len = nparams;
-    if (VIR_ALLOC_N(val, nparams) < 0)
-        goto cleanup;
-
-    for (i = 0, j = 0; i < nparams; ++i) {
-        /* virDomainGetCPUStats can return a sparse array; also, we
-         * can't pass back strings to older clients.  */
-        if (!params[i].type ||
-            (!(flags & VIR_TYPED_PARAM_STRING_OKAY) &&
-             params[i].type == VIR_TYPED_PARAM_STRING)) {
-            --*ret_params_len;
-            continue;
-        }
-
-        /* remoteDispatchClientRequest will free this: */
-        if (VIR_STRDUP(val[j].field, params[i].field) < 0)
-            goto cleanup;
-        val[j].value.type = params[i].type;
-        switch (params[i].type) {
-        case VIR_TYPED_PARAM_INT:
-            val[j].value.remote_typed_param_value_u.i = params[i].value.i;
-            break;
-        case VIR_TYPED_PARAM_UINT:
-            val[j].value.remote_typed_param_value_u.ui = params[i].value.ui;
-            break;
-        case VIR_TYPED_PARAM_LLONG:
-            val[j].value.remote_typed_param_value_u.l = params[i].value.l;
-            break;
-        case VIR_TYPED_PARAM_ULLONG:
-            val[j].value.remote_typed_param_value_u.ul = params[i].value.ul;
-            break;
-        case VIR_TYPED_PARAM_DOUBLE:
-            val[j].value.remote_typed_param_value_u.d = params[i].value.d;
-            break;
-        case VIR_TYPED_PARAM_BOOLEAN:
-            val[j].value.remote_typed_param_value_u.b = params[i].value.b;
-            break;
-        case VIR_TYPED_PARAM_STRING:
-            if (VIR_STRDUP(val[j].value.remote_typed_param_value_u.s, params[i].value.s) < 0)
-                goto cleanup;
-            break;
-        default:
-            virReportError(VIR_ERR_RPC, _("unknown parameter type: %d"),
-                           params[i].type);
-            goto cleanup;
-        }
-        j++;
-    }
-
-    *ret_params_val = val;
-    val = NULL;
-    rv = 0;
-
- cleanup:
-    if (val) {
-        for (i = 0; i < nparams; i++) {
-            VIR_FREE(val[i].field);
-            if (val[i].value.type == VIR_TYPED_PARAM_STRING)
-                VIR_FREE(val[i].value.remote_typed_param_value_u.s);
-        }
-        VIR_FREE(val);
-    }
-    return rv;
-}
-
-/* Helper to deserialize typed parameters. */
-static virTypedParameterPtr
-remoteDeserializeTypedParameters(remote_typed_param *args_params_val,
-                                 u_int args_params_len,
-                                 int limit,
-                                 int *nparams)
-{
-    size_t i = 0;
-    int rv = -1;
-    virTypedParameterPtr params = NULL;
-
-    /* Check the length of the returned list carefully. */
-    if (limit && args_params_len > limit) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("nparams too large"));
-        goto cleanup;
-    }
-    if (VIR_ALLOC_N(params, args_params_len) < 0)
-        goto cleanup;
-
-    *nparams = args_params_len;
-
-    /* Deserialise the result. */
-    for (i = 0; i < args_params_len; ++i) {
-        if (virStrcpyStatic(params[i].field,
-                            args_params_val[i].field) == NULL) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("Parameter %s too big for destination"),
-                           args_params_val[i].field);
-            goto cleanup;
-        }
-        params[i].type = args_params_val[i].value.type;
-        switch (params[i].type) {
-        case VIR_TYPED_PARAM_INT:
-            params[i].value.i =
-                args_params_val[i].value.remote_typed_param_value_u.i;
-            break;
-        case VIR_TYPED_PARAM_UINT:
-            params[i].value.ui =
-                args_params_val[i].value.remote_typed_param_value_u.ui;
-            break;
-        case VIR_TYPED_PARAM_LLONG:
-            params[i].value.l =
-                args_params_val[i].value.remote_typed_param_value_u.l;
-            break;
-        case VIR_TYPED_PARAM_ULLONG:
-            params[i].value.ul =
-                args_params_val[i].value.remote_typed_param_value_u.ul;
-            break;
-        case VIR_TYPED_PARAM_DOUBLE:
-            params[i].value.d =
-                args_params_val[i].value.remote_typed_param_value_u.d;
-            break;
-        case VIR_TYPED_PARAM_BOOLEAN:
-            params[i].value.b =
-                args_params_val[i].value.remote_typed_param_value_u.b;
-            break;
-        case VIR_TYPED_PARAM_STRING:
-            if (VIR_STRDUP(params[i].value.s,
-                           args_params_val[i].value.remote_typed_param_value_u.s) < 0)
-                goto cleanup;
-            break;
-        default:
-            virReportError(VIR_ERR_INTERNAL_ERROR, _("unknown parameter type: %d"),
-                           params[i].type);
-            goto cleanup;
-        }
-    }
-
-    rv = 0;
-
- cleanup:
-    if (rv < 0) {
-        virTypedParamsFree(params, i);
-        params = NULL;
-    }
-    return params;
-}
-
 static int
 remoteDispatchDomainGetSchedulerParameters(virNetServerPtr server ATTRIBUTE_UNUSED,
                                            virNetServerClientPtr client ATTRIBUTE_UNUSED,
@@ -1542,10 +1437,10 @@ remoteDispatchDomainGetSchedulerParameters(virNetServerPtr server ATTRIBUTE_UNUS
     if (virDomainGetSchedulerParameters(dom, params, &nparams) < 0)
         goto cleanup;
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       0) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                0) < 0)
         goto cleanup;
 
     rv = 0;
@@ -1609,11 +1504,10 @@ remoteDispatchConnectListAllDomains(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (doms && ndomains > 0) {
+    if (doms && ndomains > 0)
         for (i = 0; i < ndomains; i++)
             virObjectUnref(doms[i]);
-        VIR_FREE(doms);
-    }
+    VIR_FREE(doms);
     return rv;
 }
 
@@ -1652,10 +1546,10 @@ remoteDispatchDomainGetSchedulerParametersFlags(virNetServerPtr server ATTRIBUTE
                                              args->flags) < 0)
         goto cleanup;
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
     rv = 0;
@@ -1825,11 +1719,11 @@ remoteDispatchDomainBlockStatsFlags(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    /* Serialise the block stats. */
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    /* Serialize the block stats. */
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -2269,6 +2163,78 @@ remoteDispatchDomainGetVcpus(virNetServerPtr server ATTRIBUTE_UNUSED,
 }
 
 static int
+remoteDispatchDomainGetIOThreadInfo(virNetServerPtr server ATTRIBUTE_UNUSED,
+                                    virNetServerClientPtr client,
+                                    virNetMessagePtr msg ATTRIBUTE_UNUSED,
+                                    virNetMessageErrorPtr rerr,
+                                    remote_domain_get_iothread_info_args *args,
+                                    remote_domain_get_iothread_info_ret *ret)
+{
+    int rv = -1;
+    size_t i;
+    struct daemonClientPrivate *priv = virNetServerClientGetPrivateData(client);
+    virDomainIOThreadInfoPtr *info = NULL;
+    virDomainPtr dom = NULL;
+    remote_domain_iothread_info *dst;
+    int ninfo = 0;
+
+    if (!priv->conn) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection not open"));
+        goto cleanup;
+    }
+
+    if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
+        goto cleanup;
+
+    if ((ninfo = virDomainGetIOThreadInfo(dom, &info, args->flags)) < 0)
+        goto cleanup;
+
+    if (ninfo > REMOTE_IOTHREAD_INFO_MAX) {
+        virReportError(VIR_ERR_RPC,
+                       _("Too many IOThreads in info: %d for limit %d"),
+                       ninfo, REMOTE_IOTHREAD_INFO_MAX);
+        goto cleanup;
+    }
+
+    if (ninfo) {
+        if (VIR_ALLOC_N(ret->info.info_val, ninfo) < 0)
+            goto cleanup;
+
+        ret->info.info_len = ninfo;
+
+        for (i = 0; i < ninfo; i++) {
+            dst = &ret->info.info_val[i];
+            dst->iothread_id = info[i]->iothread_id;
+
+            /* No need to allocate/copy the cpumap if we make the reasonable
+             * assumption that unsigned char and char are the same size.
+             */
+            dst->cpumap.cpumap_len = info[i]->cpumaplen;
+            dst->cpumap.cpumap_val = (char *)info[i]->cpumap;
+            info[i]->cpumap = NULL;
+        }
+    } else {
+        ret->info.info_len = 0;
+        ret->info.info_val = NULL;
+    }
+
+    ret->ret = ninfo;
+
+    rv = 0;
+
+ cleanup:
+    if (rv < 0)
+        virNetMessageSaveError(rerr);
+    virObjectUnref(dom);
+    if (ninfo >= 0)
+        for (i = 0; i < ninfo; i++)
+            virDomainIOThreadInfoFree(info[i]);
+    VIR_FREE(info);
+
+    return rv;
+}
+
+static int
 remoteDispatchDomainMigratePrepare(virNetServerPtr server ATTRIBUTE_UNUSED,
                                    virNetServerClientPtr client ATTRIBUTE_UNUSED,
                                    virNetMessagePtr msg ATTRIBUTE_UNUSED,
@@ -2420,10 +2386,10 @@ remoteDispatchDomainGetMemoryParameters(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -2482,10 +2448,10 @@ remoteDispatchDomainGetNumaParameters(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                flags) < 0)
         goto cleanup;
 
  success:
@@ -2544,10 +2510,10 @@ remoteDispatchDomainGetBlkioParameters(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -2789,11 +2755,11 @@ remoteDispatchDomainGetBlockIoTune(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    /* Serialise the block I/O tuning parameters. */
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    /* Serialize the block I/O tuning parameters. */
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -4329,10 +4295,10 @@ remoteDispatchDomainGetInterfaceParameters(virNetServerPtr server ATTRIBUTE_UNUS
         goto success;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                flags) < 0)
         goto cleanup;
 
  success:
@@ -4391,10 +4357,10 @@ remoteDispatchDomainGetCPUStats(virNetServerPtr server ATTRIBUTE_UNUSED,
     if (args->nparams == 0)
         goto success;
 
-    if (remoteSerializeTypedParameters(params, args->nparams * args->ncpus,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    if (virTypedParamsSerialize(params, args->nparams * args->ncpus,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -4533,11 +4499,10 @@ remoteDispatchDomainListAllSnapshots(virNetServerPtr server ATTRIBUTE_UNUSED,
     if (rv < 0)
         virNetMessageSaveError(rerr);
     virObjectUnref(dom);
-    if (snaps && nsnaps > 0) {
+    if (snaps && nsnaps > 0)
         for (i = 0; i < nsnaps; i++)
             virObjectUnref(snaps[i]);
-        VIR_FREE(snaps);
-    }
+    VIR_FREE(snaps);
     return rv;
 }
 
@@ -4602,11 +4567,10 @@ remoteDispatchDomainSnapshotListAllChildren(virNetServerPtr server ATTRIBUTE_UNU
         virNetMessageSaveError(rerr);
     virObjectUnref(snapshot);
     virObjectUnref(dom);
-    if (snaps && nsnaps > 0) {
+    if (snaps && nsnaps > 0)
         for (i = 0; i < nsnaps; i++)
             virObjectUnref(snaps[i]);
-        VIR_FREE(snaps);
-    }
+    VIR_FREE(snaps);
     return rv;
 }
 
@@ -4661,11 +4625,10 @@ remoteDispatchConnectListAllStoragePools(virNetServerPtr server ATTRIBUTE_UNUSED
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (pools && npools > 0) {
+    if (pools && npools > 0)
         for (i = 0; i < npools; i++)
             virObjectUnref(pools[i]);
-        VIR_FREE(pools);
-    }
+    VIR_FREE(pools);
     return rv;
 }
 
@@ -4724,11 +4687,10 @@ remoteDispatchStoragePoolListAllVolumes(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (vols && nvols > 0) {
+    if (vols && nvols > 0)
         for (i = 0; i < nvols; i++)
             virObjectUnref(vols[i]);
-        VIR_FREE(vols);
-    }
+    VIR_FREE(vols);
     virObjectUnref(pool);
     return rv;
 }
@@ -4784,11 +4746,10 @@ remoteDispatchConnectListAllNetworks(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (nets && nnets > 0) {
+    if (nets && nnets > 0)
         for (i = 0; i < nnets; i++)
             virObjectUnref(nets[i]);
-        VIR_FREE(nets);
-    }
+    VIR_FREE(nets);
     return rv;
 }
 
@@ -4843,11 +4804,10 @@ remoteDispatchConnectListAllInterfaces(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (ifaces && nifaces > 0) {
+    if (ifaces && nifaces > 0)
         for (i = 0; i < nifaces; i++)
             virObjectUnref(ifaces[i]);
-        VIR_FREE(ifaces);
-    }
+    VIR_FREE(ifaces);
     return rv;
 }
 
@@ -4902,11 +4862,10 @@ remoteDispatchConnectListAllNodeDevices(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (devices && ndevices > 0) {
+    if (devices && ndevices > 0)
         for (i = 0; i < ndevices; i++)
             virObjectUnref(devices[i]);
-        VIR_FREE(devices);
-    }
+    VIR_FREE(devices);
     return rv;
 }
 
@@ -4961,11 +4920,10 @@ remoteDispatchConnectListAllNWFilters(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (filters && nfilters > 0) {
+    if (filters && nfilters > 0)
         for (i = 0; i < nfilters; i++)
             virObjectUnref(filters[i]);
-        VIR_FREE(filters);
-    }
+    VIR_FREE(filters);
     return rv;
 }
 
@@ -5020,11 +4978,10 @@ remoteDispatchConnectListAllSecrets(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (secrets && nsecrets > 0) {
+    if (secrets && nsecrets > 0)
         for (i = 0; i < nsecrets; i++)
             virObjectUnref(secrets[i]);
-        VIR_FREE(secrets);
-    }
+    VIR_FREE(secrets);
     return rv;
 }
 
@@ -5069,10 +5026,10 @@ remoteDispatchNodeGetMemoryParameters(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto success;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       args->flags) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                args->flags) < 0)
         goto cleanup;
 
  success:
@@ -5216,10 +5173,10 @@ remoteDispatchDomainGetJobStats(virNetServerPtr server ATTRIBUTE_UNUSED,
         goto cleanup;
     }
 
-    if (remoteSerializeTypedParameters(params, nparams,
-                                       &ret->params.params_val,
-                                       &ret->params.params_len,
-                                       0) < 0)
+    if (virTypedParamsSerialize(params, nparams,
+                                (virTypedParameterRemotePtr *) &ret->params.params_val,
+                                &ret->params.params_len,
+                                0) < 0)
         goto cleanup;
 
     rv = 0;
@@ -5265,9 +5222,9 @@ remoteDispatchDomainMigrateBegin3Params(virNetServerPtr server ATTRIBUTE_UNUSED,
     if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
         goto cleanup;
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     if (!(xml = virDomainMigrateBegin3Params(dom, params, nparams,
@@ -5318,9 +5275,9 @@ remoteDispatchDomainMigratePrepare3Params(virNetServerPtr server ATTRIBUTE_UNUSE
         goto cleanup;
     }
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     /* Wacky world of XDR ... */
@@ -5379,9 +5336,9 @@ remoteDispatchDomainMigratePrepareTunnel3Params(virNetServerPtr server ATTRIBUTE
         goto cleanup;
     }
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     if (!(st = virStreamNew(priv->conn, VIR_STREAM_NONBLOCK)) ||
@@ -5452,9 +5409,9 @@ remoteDispatchDomainMigratePerform3Params(virNetServerPtr server ATTRIBUTE_UNUSE
     if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
         goto cleanup;
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     dconnuri = args->dconnuri == NULL ? NULL : *args->dconnuri;
@@ -5509,9 +5466,9 @@ remoteDispatchDomainMigrateFinish3Params(virNetServerPtr server ATTRIBUTE_UNUSED
         goto cleanup;
     }
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     dom = virDomainMigrateFinish3Params(priv->conn, params, nparams,
@@ -5569,9 +5526,9 @@ remoteDispatchDomainMigrateConfirm3Params(virNetServerPtr server ATTRIBUTE_UNUSE
     if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
         goto cleanup;
 
-    if (!(params = remoteDeserializeTypedParameters(args->params.params_val,
-                                                    args->params.params_len,
-                                                    0, &nparams)))
+    if (virTypedParamsDeserialize((virTypedParameterRemotePtr) args->params.params_val,
+                                  args->params.params_len,
+                                  0, &params, &nparams) < 0)
         goto cleanup;
 
     if (virDomainMigrateConfirm3Params(dom, params, nparams,
@@ -6192,11 +6149,10 @@ remoteDispatchNetworkGetDHCPLeases(virNetServerPtr server ATTRIBUTE_UNUSED,
  cleanup:
     if (rv < 0)
         virNetMessageSaveError(rerr);
-    if (leases && nleases > 0) {
+    if (leases && nleases > 0)
         for (i = 0; i < nleases; i++)
             virNetworkDHCPLeaseFree(leases[i]);
-        VIR_FREE(leases);
-    }
+    VIR_FREE(leases);
     virObjectUnref(net);
     return rv;
 }
@@ -6263,11 +6219,11 @@ remoteDispatchConnectGetAllDomainStats(virNetServerPtr server ATTRIBUTE_UNUSED,
 
             make_nonnull_domain(&dst->dom, retStats[i]->dom);
 
-            if (remoteSerializeTypedParameters(retStats[i]->params,
-                                               retStats[i]->nparams,
-                                               &dst->params.params_val,
-                                               &dst->params.params_len,
-                                               VIR_TYPED_PARAM_STRING_OKAY) < 0)
+            if (virTypedParamsSerialize(retStats[i]->params,
+                                        retStats[i]->nparams,
+                                        (virTypedParameterRemotePtr *) &dst->params.params_val,
+                                        &dst->params.params_len,
+                                        VIR_TYPED_PARAM_STRING_OKAY) < 0)
                 goto cleanup;
         }
     } else {
@@ -6282,7 +6238,7 @@ remoteDispatchConnectGetAllDomainStats(virNetServerPtr server ATTRIBUTE_UNUSED,
         virNetMessageSaveError(rerr);
 
     virDomainStatsRecordListFree(retStats);
-    virDomainListFree(doms);
+    virObjectListFree(doms);
 
     return rv;
 }
@@ -6433,6 +6389,135 @@ remoteDispatchDomainGetFSInfo(virNetServerPtr server ATTRIBUTE_UNUSED,
         for (i = 0; i < ninfo; i++)
             virDomainFSInfoFree(info[i]);
     VIR_FREE(info);
+
+    return rv;
+}
+
+
+static int
+remoteSerializeDomainInterface(virDomainInterfacePtr *ifaces,
+                               unsigned int ifaces_count,
+                               remote_domain_interface_addresses_ret *ret)
+{
+    size_t i, j;
+
+    if (ifaces_count > REMOTE_DOMAIN_INTERFACE_MAX) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Number of interfaces, %d exceeds the max limit: %d"),
+                       ifaces_count, REMOTE_DOMAIN_INTERFACE_MAX);
+        return -1;
+    }
+
+    if (VIR_ALLOC_N(ret->ifaces.ifaces_val, ifaces_count) < 0)
+        return -1;
+
+    ret->ifaces.ifaces_len = ifaces_count;
+
+    for (i = 0; i < ifaces_count; i++) {
+        virDomainInterfacePtr iface = ifaces[i];
+        remote_domain_interface *iface_ret = &(ret->ifaces.ifaces_val[i]);
+
+        if ((VIR_STRDUP(iface_ret->name, iface->name)) < 0)
+            goto cleanup;
+
+        if (iface->hwaddr &&
+            (VIR_ALLOC(iface_ret->hwaddr) < 0 ||
+             VIR_STRDUP(*iface_ret->hwaddr, iface->hwaddr) < 0))
+            goto cleanup;
+
+        if (iface->naddrs > REMOTE_DOMAIN_IP_ADDR_MAX) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           _("Number of interfaces, %d exceeds the max limit: %d"),
+                           iface->naddrs, REMOTE_DOMAIN_IP_ADDR_MAX);
+            goto cleanup;
+        }
+
+        if (VIR_ALLOC_N(iface_ret->addrs.addrs_val,
+                        iface->naddrs) < 0)
+            goto cleanup;
+
+        iface_ret->addrs.addrs_len = iface->naddrs;
+
+        for (j = 0; j < iface->naddrs; j++) {
+            virDomainIPAddressPtr ip_addr = &(iface->addrs[j]);
+            remote_domain_ip_addr *ip_addr_ret =
+                &(iface_ret->addrs.addrs_val[j]);
+
+            if (VIR_STRDUP(ip_addr_ret->addr, ip_addr->addr) < 0)
+                goto cleanup;
+
+            ip_addr_ret->prefix = ip_addr->prefix;
+            ip_addr_ret->type = ip_addr->type;
+        }
+    }
+
+    return 0;
+
+ cleanup:
+    if (ret->ifaces.ifaces_val) {
+        for (i = 0; i < ifaces_count; i++) {
+            remote_domain_interface *iface_ret = &(ret->ifaces.ifaces_val[i]);
+            VIR_FREE(iface_ret->name);
+            if (iface_ret->hwaddr) {
+                VIR_FREE(*iface_ret->hwaddr);
+                VIR_FREE(iface_ret->hwaddr);
+            }
+            for (j = 0; j < iface_ret->addrs.addrs_len; j++) {
+                remote_domain_ip_addr *ip_addr =
+                    &(iface_ret->addrs.addrs_val[j]);
+                VIR_FREE(ip_addr->addr);
+            }
+        }
+        VIR_FREE(ret->ifaces.ifaces_val);
+    }
+
+    return -1;
+}
+
+
+static int
+remoteDispatchDomainInterfaceAddresses(virNetServerPtr server ATTRIBUTE_UNUSED,
+                                       virNetServerClientPtr client,
+                                       virNetMessagePtr msg ATTRIBUTE_UNUSED,
+                                       virNetMessageErrorPtr rerr,
+                                       remote_domain_interface_addresses_args *args,
+                                       remote_domain_interface_addresses_ret *ret)
+{
+    size_t i;
+    int rv = -1;
+    virDomainPtr dom = NULL;
+    virDomainInterfacePtr *ifaces = NULL;
+    int ifaces_count = 0;
+    struct daemonClientPrivate *priv =
+        virNetServerClientGetPrivateData(client);
+
+    if (!priv->conn) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s", _("connection not open"));
+        goto cleanup;
+    }
+
+    if (!(dom = get_nonnull_domain(priv->conn, args->dom)))
+        goto cleanup;
+
+    if ((ifaces_count = virDomainInterfaceAddresses(dom, &ifaces, args->source, args->flags)) < 0)
+        goto cleanup;
+
+    if (remoteSerializeDomainInterface(ifaces, ifaces_count, ret) < 0)
+        goto cleanup;
+
+    rv = 0;
+
+ cleanup:
+    if (rv < 0)
+        virNetMessageSaveError(rerr);
+
+    virObjectUnref(dom);
+
+    if (ifaces && ifaces_count > 0) {
+        for (i = 0; i < ifaces_count; i++)
+            virDomainInterfaceFree(ifaces[i]);
+    }
+    VIR_FREE(ifaces);
 
     return rv;
 }

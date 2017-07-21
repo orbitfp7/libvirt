@@ -1,7 +1,7 @@
 /*
  * sockettest.c: Testing for src/util/network.c APIs
  *
- * Copyright (C) 2010-2011, 2014 Red Hat, Inc.
+ * Copyright (C) 2010-2011, 2014, 2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -86,35 +86,50 @@ static int testFormatHelper(const void *opaque)
 }
 
 
-static int testRange(const char *saddrstr, const char *eaddrstr, int size, bool pass)
+static int
+testRange(const char *saddrstr, const char *eaddrstr,
+          const char *netstr, int prefix, int size, bool pass)
 {
     virSocketAddr saddr;
     virSocketAddr eaddr;
+    virSocketAddr netaddr;
 
     if (virSocketAddrParse(&saddr, saddrstr, AF_UNSPEC) < 0)
         return -1;
     if (virSocketAddrParse(&eaddr, eaddrstr, AF_UNSPEC) < 0)
         return -1;
+    if (netstr && virSocketAddrParse(&netaddr, netstr, AF_UNSPEC) < 0)
+        return -1;
 
-    int gotsize = virSocketAddrGetRange(&saddr, &eaddr);
+    int gotsize = virSocketAddrGetRange(&saddr, &eaddr,
+                                        netstr ? &netaddr : NULL, prefix);
     VIR_DEBUG("Size want %d vs got %d", size, gotsize);
-    if (gotsize < 0 || gotsize != size) {
-        return pass ? -1 : 0;
+    if (pass) {
+        /* fail if virSocketAddrGetRange returns failure, or unexpected size */
+        return (gotsize < 0 || gotsize != size) ? -1 : 0;
     } else {
-        return pass ? 0 : -1;
+        /* succeed if virSocketAddrGetRange fails, otherwise fail. */
+        return gotsize < 0 ? 0 : -1;
     }
 }
+
 
 struct testRangeData {
     const char *saddr;
     const char *eaddr;
+    const char *netaddr;
+    int prefix;
     int size;
     bool pass;
 };
+
+
 static int testRangeHelper(const void *opaque)
 {
     const struct testRangeData *data = opaque;
-    return testRange(data->saddr, data->eaddr, data->size, data->pass);
+    return testRange(data->saddr, data->eaddr,
+                     data->netaddr, data->prefix,
+                     data->size, data->pass);
 }
 
 
@@ -259,16 +274,6 @@ mymain(void)
      */
     virtTestQuiesceLibvirtErrors(false);
 
-#define DO_TEST_PARSE(addrstr, family, pass)                            \
-    do {                                                                \
-        virSocketAddr addr;                                             \
-        struct testParseData data = { &addr, addrstr, family, pass };   \
-        memset(&addr, 0, sizeof(addr));                                 \
-        if (virtTestRun("Test parse " addrstr,                          \
-                        testParseHelper, &data) < 0)                    \
-            ret = -1;                                                   \
-    } while (0)
-
 #define DO_TEST_PARSE_AND_FORMAT(addrstr, family, pass)                 \
     do {                                                                \
         virSocketAddr addr;                                             \
@@ -297,10 +302,21 @@ mymain(void)
             ret = -1;                                                   \
     } while (0)
 
-#define DO_TEST_RANGE(saddr, eaddr, size, pass)                         \
+#define DO_TEST_RANGE(saddr, eaddr, netaddr, prefix, size, pass)        \
     do {                                                                \
-        struct testRangeData data = { saddr, eaddr, size, pass };       \
-        if (virtTestRun("Test range " saddr " -> " eaddr " size " #size, \
+        struct testRangeData data                                       \
+           = { saddr, eaddr, netaddr, prefix, size, pass };             \
+        if (virtTestRun("Test range " saddr " -> " eaddr "(" netaddr \
+                        "/" #prefix") size " #size, \
+                        testRangeHelper, &data) < 0)                    \
+            ret = -1;                                                   \
+    } while (0)
+
+#define DO_TEST_RANGE_SIMPLE(saddr, eaddr, size, pass)                  \
+    do {                                                                \
+        struct testRangeData data                                       \
+           = { saddr, eaddr, NULL, 0, size, pass };                     \
+        if (virtTestRun("Test range " saddr " -> " eaddr "size " #size, \
                         testRangeHelper, &data) < 0)                    \
             ret = -1;                                                   \
     } while (0)
@@ -367,17 +383,54 @@ mymain(void)
     DO_TEST_PARSE_AND_FORMAT("::1", AF_UNIX, false);
     DO_TEST_PARSE_AND_FORMAT("::ffff", AF_UNSPEC, true);
 
-    DO_TEST_RANGE("192.168.122.1", "192.168.122.1", 1, true);
-    DO_TEST_RANGE("192.168.122.1", "192.168.122.20", 20, true);
-    DO_TEST_RANGE("192.168.122.0", "192.168.122.255", 256, true);
-    DO_TEST_RANGE("192.168.122.20", "192.168.122.1", -1, false);
-    DO_TEST_RANGE("10.0.0.1", "192.168.122.20", -1, false);
-    DO_TEST_RANGE("192.168.122.20", "10.0.0.1", -1, false);
+    /* tests that specify a network that should contain the range */
+    DO_TEST_RANGE("192.168.122.1", "192.168.122.1", "192.168.122.1", 24, 1, true);
+    DO_TEST_RANGE("192.168.122.1", "192.168.122.20", "192.168.122.22", 24, 20, true);
+    /* start of range is "network address" */
+    DO_TEST_RANGE("192.168.122.0", "192.168.122.254", "192.168.122.1", 24, -1, false);
+    /* end of range is "broadcast address" */
+    DO_TEST_RANGE("192.168.122.1", "192.168.122.255", "192.168.122.1", 24, -1, false);
+    DO_TEST_RANGE("192.168.122.0", "192.168.122.255", "192.168.122.1", 16, 256, true);
+    /* range is reversed */
+    DO_TEST_RANGE("192.168.122.20", "192.168.122.1", "192.168.122.1", 24, -1, false);
+    /* start address outside network */
+    DO_TEST_RANGE("10.0.0.1", "192.168.122.20", "192.168.122.1", 24, -1, false);
+    /* end address outside network and range reversed */
+    DO_TEST_RANGE("192.168.122.20", "10.0.0.1", "192.168.122.1", 24, -1, false);
+    /* entire range outside network */
+    DO_TEST_RANGE("172.16.0.50", "172.16.0.254", "1.2.3.4", 8, -1, false);
+    /* end address outside network */
+    DO_TEST_RANGE("192.168.122.1", "192.168.123.20", "192.168.122.22", 24, -1, false);
+    DO_TEST_RANGE("192.168.122.1", "192.168.123.20", "192.168.122.22", 23, 276, true);
 
-    DO_TEST_RANGE("2000::1", "2000::1", 1, true);
-    DO_TEST_RANGE("2000::1", "2000::2", 2, true);
-    DO_TEST_RANGE("2000::2", "2000::1", -1, false);
-    DO_TEST_RANGE("2000::1", "9001::1", -1, false);
+    DO_TEST_RANGE("2000::1", "2000::1", "2000::1", 64, 1, true);
+    DO_TEST_RANGE("2000::1", "2000::2", "2000::1", 64, 2, true);
+    /* range reversed */
+    DO_TEST_RANGE("2000::2", "2000::1", "2000::1", 64, -1, false);
+    /* range too large (> 65536) */
+    DO_TEST_RANGE("2000::1", "9001::1", "2000::1", 64, -1, false);
+
+    /* tests that *don't* specify a containing network
+     * (so fewer things can be checked)
+     */
+    DO_TEST_RANGE_SIMPLE("192.168.122.1", "192.168.122.1", 1, true);
+    DO_TEST_RANGE_SIMPLE("192.168.122.1", "192.168.122.20", 20, true);
+    DO_TEST_RANGE_SIMPLE("192.168.122.0", "192.168.122.255", 256, true);
+    /* range is reversed */
+    DO_TEST_RANGE_SIMPLE("192.168.122.20", "192.168.122.1", -1, false);
+    /* range too large (> 65536) */
+    DO_TEST_RANGE_SIMPLE("10.0.0.1", "192.168.122.20", -1, false);
+    /* range reversed */
+    DO_TEST_RANGE_SIMPLE("192.168.122.20", "10.0.0.1", -1, false);
+    DO_TEST_RANGE_SIMPLE("172.16.0.50", "172.16.0.254", 205, true);
+    DO_TEST_RANGE_SIMPLE("192.168.122.1", "192.168.123.20", 276, true);
+
+    DO_TEST_RANGE_SIMPLE("2000::1", "2000::1", 1, true);
+    DO_TEST_RANGE_SIMPLE("2000::1", "2000::2", 2, true);
+    /* range reversed */
+    DO_TEST_RANGE_SIMPLE("2000::2", "2000::1", -1, false);
+    /* range too large (> 65536) */
+    DO_TEST_RANGE_SIMPLE("2000::1", "9001::1", -1, false);
 
     DO_TEST_NETMASK("192.168.122.1", "192.168.122.2",
                     "255.255.255.0", true);

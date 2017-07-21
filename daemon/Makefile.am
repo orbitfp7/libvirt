@@ -1,6 +1,6 @@
 ## Process this file with automake to produce Makefile.in
 
-## Copyright (C) 2005-2014 Red Hat, Inc.
+## Copyright (C) 2005-2015 Red Hat, Inc.
 ##
 ## This library is free software; you can redistribute it and/or
 ## modify it under the terms of the GNU Lesser General Public
@@ -25,6 +25,7 @@ INCLUDES = \
 	-I$(top_srcdir)/src/conf \
 	-I$(top_srcdir)/src/rpc \
 	-I$(top_srcdir)/src/remote \
+	-I$(top_srcdir)/src/admin \
 	-I$(top_srcdir)/src/access \
 	$(GETTEXT_CPPFLAGS)
 
@@ -34,6 +35,7 @@ DAEMON_GENERATED =			\
 		remote_dispatch.h	\
 		lxc_dispatch.h		\
 		qemu_dispatch.h		\
+		admin_dispatch.h	\
 		$(NULL)
 
 DAEMON_SOURCES =					\
@@ -49,10 +51,12 @@ EXTRA_DIST =						\
 	remote_dispatch.h				\
 	lxc_dispatch.h					\
 	qemu_dispatch.h					\
+	admin_dispatch.h				\
 	libvirtd.conf					\
 	libvirtd.init.in				\
 	libvirtd.upstart				\
 	libvirtd.policy.in				\
+	libvirt.rules					\
 	libvirtd.sasl					\
 	libvirtd.service.in				\
 	libvirtd.socket.in				\
@@ -62,6 +66,7 @@ EXTRA_DIST =						\
 	libvirtd.logrotate.in                           \
 	libvirtd.qemu.logrotate.in                      \
 	libvirtd.lxc.logrotate.in                       \
+	libvirtd.libxl.logrotate.in                     \
 	libvirtd.uml.logrotate.in                       \
 	test_libvirtd.aug.in                             \
 	THREADS.txt					\
@@ -76,24 +81,31 @@ BUILT_SOURCES =
 REMOTE_PROTOCOL = $(top_srcdir)/src/remote/remote_protocol.x
 LXC_PROTOCOL = $(top_srcdir)/src/remote/lxc_protocol.x
 QEMU_PROTOCOL = $(top_srcdir)/src/remote/qemu_protocol.x
+ADMIN_PROTOCOL = $(top_srcdir)/src/admin/admin_protocol.x
 
-remote_dispatch.h: $(srcdir)/../src/rpc/gendispatch.pl \
+remote_dispatch.h: $(top_srcdir)/src/rpc/gendispatch.pl \
 		$(REMOTE_PROTOCOL)
-	$(AM_V_GEN)$(PERL) -w $(srcdir)/../src/rpc/gendispatch.pl \
+	$(AM_V_GEN)$(PERL) -w $(top_srcdir)/src/rpc/gendispatch.pl \
 	  --mode=server remote REMOTE $(REMOTE_PROTOCOL) \
 	  > $(srcdir)/remote_dispatch.h
 
-lxc_dispatch.h: $(srcdir)/../src/rpc/gendispatch.pl \
+lxc_dispatch.h: $(top_srcdir)/src/rpc/gendispatch.pl \
 		$(LXC_PROTOCOL)
-	$(AM_V_GEN)$(PERL) -w $(srcdir)/../src/rpc/gendispatch.pl \
+	$(AM_V_GEN)$(PERL) -w $(top_srcdir)/src/rpc/gendispatch.pl \
 	  --mode=server lxc LXC $(LXC_PROTOCOL) \
 	  > $(srcdir)/lxc_dispatch.h
 
-qemu_dispatch.h: $(srcdir)/../src/rpc/gendispatch.pl \
+qemu_dispatch.h: $(top_srcdir)/src/rpc/gendispatch.pl \
 		$(QEMU_PROTOCOL)
-	$(AM_V_GEN)$(PERL) -w $(srcdir)/../src/rpc/gendispatch.pl \
+	$(AM_V_GEN)$(PERL) -w $(top_srcdir)/src/rpc/gendispatch.pl \
 	  --mode=server qemu QEMU $(QEMU_PROTOCOL) \
 	  > $(srcdir)/qemu_dispatch.h
+
+admin_dispatch.h: $(top_srcdir)/src/rpc/gendispatch.pl \
+		$(ADMIN_PROTOCOL)
+	$(AM_V_GEN)$(PERL) -w $(top_srcdir)/src/rpc/gendispatch.pl \
+	  --mode=server admin ADMIN $(ADMIN_PROTOCOL) \
+	  > $(srcdir)/admin_dispatch.h
 
 if WITH_LIBVIRTD
 
@@ -113,6 +125,27 @@ libvirtd_conf_la_LDFLAGS =				\
 	$(NO_INDIRECT_LDFLAGS)				\
 	$(NULL)
 libvirtd_conf_la_LIBADD = $(LIBXML_LIBS)
+
+noinst_LTLIBRARIES += libvirtd_admin.la
+libvirtd_admin_la_SOURCES = \
+		admin_server.c admin_server.h
+
+libvirtd_admin_la_CFLAGS = \
+		$(AM_CFLAGS)		\
+		$(XDR_CFLAGS)		\
+		$(PIE_CFLAGS)		\
+		$(WARN_CFLAGS)		\
+		$(LIBXML_CFLAGS)	\
+		$(COVERAGE_CFLAGS)	\
+		$(NULL)
+libvirtd_admin_la_LDFLAGS = \
+		$(PIE_LDFLAGS)		\
+		$(RELRO_LDFLAGS)	\
+		$(COVERAGE_LDFLAGS)	\
+		$(NO_INDIRECT_LDFLAGS)  \
+		$(NULL)
+libvirtd_admin_la_LIBADD =	\
+		../src/libvirt-admin.la
 
 man8_MANS = libvirtd.8
 
@@ -166,6 +199,7 @@ endif WITH_DTRACE_PROBES
 
 libvirtd_LDADD += \
 	libvirtd_conf.la \
+	libvirtd_admin.la \
 	../src/libvirt-lxc.la \
 	../src/libvirt-qemu.la \
 	../src/libvirt_driver_remote.la \
@@ -233,6 +267,8 @@ policyauth = auth_admin_keep_session
 else ! WITH_POLKIT0
 policydir = $(datadir)/polkit-1/actions
 policyauth = auth_admin_keep
+rulesdir = $(datadir)/polkit-1/rules.d
+rulesfile = libvirt.rules
 endif ! WITH_POLKIT0
 endif WITH_POLKIT
 
@@ -263,9 +299,19 @@ if WITH_POLKIT
 install-data-polkit::
 	$(MKDIR_P) $(DESTDIR)$(policydir)
 	$(INSTALL_DATA) libvirtd.policy $(DESTDIR)$(policydir)/org.libvirt.unix.policy
+if ! WITH_POLKIT0
+	$(MKDIR_P) $(DESTDIR)$(rulesdir)
+	$(INSTALL_DATA) $(srcdir)/$(rulesfile) $(DESTDIR)$(rulesdir)/50-libvirt.rules
+endif ! WITH_POLKIT0
+
 uninstall-data-polkit::
 	rm -f $(DESTDIR)$(policydir)/org.libvirt.unix.policy
 	rmdir $(DESTDIR)$(policydir) || :
+if ! WITH_POLKIT0
+	rm -f $(DESTDIR)$(rulesdir)/50-libvirt.rules
+	rmdir $(DESTDIR)$(rulesdir) || :
+endif ! WITH_POLKIT0
+
 else ! WITH_POLKIT
 install-data-polkit::
 uninstall-data-polkit::
@@ -273,9 +319,11 @@ endif ! WITH_POLKIT
 
 remote.c: $(DAEMON_GENERATED)
 remote.h: $(DAEMON_GENERATED)
+admin_server.c: $(DAEMON_GENERATED)
 
 LOGROTATE_CONFS = libvirtd.qemu.logrotate libvirtd.lxc.logrotate \
-		  libvirtd.uml.logrotate libvirtd.logrotate
+		  libvirtd.libxl.logrotate libvirtd.uml.logrotate \
+		  libvirtd.logrotate
 
 BUILT_SOURCES += $(LOGROTATE_CONFS)
 
@@ -292,6 +340,12 @@ libvirtd.qemu.logrotate: libvirtd.qemu.logrotate.in
 	mv $@-t $@
 
 libvirtd.lxc.logrotate: libvirtd.lxc.logrotate.in
+	$(AM_V_GEN)sed						\
+	    -e 's|[@]localstatedir[@]|$(localstatedir)|g'	\
+	    < $< > $@-t &&					\
+	    mv $@-t $@
+
+libvirtd.libxl.logrotate: libvirtd.libxl.logrotate.in
 	$(AM_V_GEN)sed						\
 	    -e 's|[@]localstatedir[@]|$(localstatedir)|g'	\
 	    < $< > $@-t &&					\
@@ -314,6 +368,8 @@ install-logrotate: $(LOGROTATE_CONFS)
 		$(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.qemu
 	$(INSTALL_DATA) libvirtd.lxc.logrotate \
 		$(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.lxc
+	$(INSTALL_DATA) libvirtd.libxl.logrotate \
+		$(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.libxl
 	$(INSTALL_DATA) libvirtd.uml.logrotate \
 		$(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.uml
 
@@ -321,6 +377,7 @@ uninstall-logrotate:
 	rm -f $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd \
 	      $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.qemu \
 	      $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.lxc \
+	      $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.libxl \
 	      $(DESTDIR)$(sysconfdir)/logrotate.d/libvirtd.uml
 	rmdir $(DESTDIR)$(localstatedir)/log/libvirt/qemu || :
 	rmdir $(DESTDIR)$(localstatedir)/log/libvirt/lxc || :
@@ -341,10 +398,10 @@ if WITH_SYSCTL
 install-sysctl:
 	$(MKDIR_P) $(DESTDIR)$(prefix)/lib/sysctl.d
 	$(INSTALL_DATA) $(srcdir)/libvirtd.sysctl \
-	  $(DESTDIR)$(prefix)/lib/sysctl.d/libvirtd.conf
+	  $(DESTDIR)$(prefix)/lib/sysctl.d/60-libvirtd.conf
 
 uninstall-sysctl:
-	rm -f $(DESTDIR)$(prefix)/lib/sysctl.d/libvirtd.conf
+	rm -f $(DESTDIR)$(prefix)/lib/sysctl.d/60-libvirtd.conf
 	rmdir $(DESTDIR)$(prefix)/lib/sysctl.d || :
 else ! WITH_SYSCTL
 install-sysctl:

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2014 Red Hat, Inc.
+ * Copyright (C) 2008-2015 Red Hat, Inc.
  * Copyright (C) 2008 IBM Corp.
  * Copyright (c) 2015 SUSE LINUX Products GmbH, Nuernberg, Germany.
  *
@@ -27,6 +27,7 @@
 #include <config.h>
 
 #include <fcntl.h>
+#include <sched.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -38,7 +39,6 @@
 #include <mntent.h>
 #include <sys/reboot.h>
 #include <linux/reboot.h>
-
 /* Yes, we want linux private one, for _syscall2() macro */
 #include <linux/unistd.h>
 
@@ -111,6 +111,7 @@ struct __lxc_child_argv {
     size_t nttyPaths;
     char **ttyPaths;
     int handshakefd;
+    int *nsInheritFDs;
 };
 
 static int lxcContainerMountFSBlock(virDomainFSDefPtr fs,
@@ -277,18 +278,6 @@ static int lxcContainerSetupFDs(int *ttyfd,
     VIR_DEBUG("Logging from the container init will now cease "
               "as the FDs are about to be closed for exec of "
               "the container init process");
-
-    if (setsid() < 0) {
-        virReportSystemError(errno, "%s",
-                             _("setsid failed"));
-        goto cleanup;
-    }
-
-    if (ioctl(*ttyfd, TIOCSCTTY, NULL) < 0) {
-        virReportSystemError(errno, "%s",
-                             _("ioctl(TIOCSCTTY) failed"));
-        goto cleanup;
-    }
 
     if (dup2(*ttyfd, STDIN_FILENO) < 0) {
         virReportSystemError(errno, "%s",
@@ -541,7 +530,8 @@ static int lxcContainerRenameAndEnableInterfaces(virDomainDefPtr vmDef,
             VIR_FREE(ipStr);
         }
 
-        if (netDef->linkstate != VIR_DOMAIN_NET_INTERFACE_LINK_STATE_DOWN) {
+        if (netDef->nips ||
+            netDef->linkstate == VIR_DOMAIN_NET_INTERFACE_LINK_STATE_UP) {
             VIR_DEBUG("Enabling %s", newname);
             rc = virNetDevSetOnline(newname, true);
             if (rc < 0)
@@ -849,7 +839,7 @@ typedef struct {
 
 static const virLXCBasicMountInfo lxcBasicMounts[] = {
     { "proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, false, false, false },
-    { "/proc/sys", "/proc/sys", NULL, MS_BIND|MS_RDONLY, false, false, false },
+    { "/proc/sys", "/proc/sys", NULL, MS_BIND|MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_RDONLY, false, false, false },
     { "/.oldroot/proc/sys/net/ipv4", "/proc/sys/net/ipv4", NULL, MS_BIND, false, false, true },
     { "/.oldroot/proc/sys/net/ipv6", "/proc/sys/net/ipv6", NULL, MS_BIND, false, false, true },
     { "sysfs", "/sys", "sysfs", MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_RDONLY, false, false, false },
@@ -1029,7 +1019,7 @@ static int lxcContainerMountBasicFS(bool userns_enabled,
 
         if (bindOverReadonly &&
             mount(mnt_src, mnt->dst, NULL,
-                  MS_BIND|MS_REMOUNT|MS_RDONLY, NULL) < 0) {
+                  MS_BIND|MS_REMOUNT|mnt_mflags|MS_RDONLY, NULL) < 0) {
             virReportSystemError(errno,
                                  _("Failed to re-mount %s on %s flags=%x"),
                                  mnt_src, mnt->dst,
@@ -1152,6 +1142,20 @@ static int lxcContainerMountFSDevPTS(virDomainDefPtr def,
     return ret;
 }
 
+static int lxcContainerBindMountDevice(const char *src, const char *dst)
+{
+    if (virFileTouch(dst, 0666) < 0)
+        return -1;
+
+    if (mount(src, dst, "none", MS_BIND, NULL) < 0) {
+        virReportSystemError(errno, _("Failed to bind %s on to %s"), src,
+                             dst);
+        return -1;
+    }
+
+    return 0;
+}
+
 static int lxcContainerSetupDevices(char **ttyPaths, size_t nttyPaths)
 {
     size_t i;
@@ -1175,34 +1179,24 @@ static int lxcContainerSetupDevices(char **ttyPaths, size_t nttyPaths)
     }
 
     /* We have private devpts capability, so bind that */
-    if (virFileTouch("/dev/ptmx", 0666) < 0)
+    if (lxcContainerBindMountDevice("/dev/pts/ptmx", "/dev/ptmx") < 0)
         return -1;
-
-    if (mount("/dev/pts/ptmx", "/dev/ptmx", "ptmx", MS_BIND, NULL) < 0) {
-        virReportSystemError(errno, "%s",
-                             _("Failed to bind /dev/pts/ptmx on to /dev/ptmx"));
-        return -1;
-    }
 
     for (i = 0; i < nttyPaths; i++) {
         char *tty;
         if (virAsprintf(&tty, "/dev/tty%zu", i+1) < 0)
             return -1;
-        if (symlink(ttyPaths[i], tty) < 0) {
-            virReportSystemError(errno,
-                                 _("Failed to symlink %s to %s"),
-                                 ttyPaths[i], tty);
+
+        if (lxcContainerBindMountDevice(ttyPaths[i], tty) < 0) {
+            return -1;
             VIR_FREE(tty);
-            return -1;
         }
+
         VIR_FREE(tty);
+
         if (i == 0 &&
-            symlink(ttyPaths[i], "/dev/console") < 0) {
-            virReportSystemError(errno,
-                                 _("Failed to symlink %s to /dev/console"),
-                                 ttyPaths[i]);
+            lxcContainerBindMountDevice(ttyPaths[i], "/dev/console") < 0)
             return -1;
-        }
     }
     return 0;
 }
@@ -1833,7 +1827,7 @@ static int lxcContainerSetupPivotRoot(virDomainDefPtr vmDef,
 
     /* Now we can re-mount the cgroups controllers in the
      * same configuration as before */
-    if (virCgroupIsolateMount(cgroup, "/.oldroot/", sec_mount_options) < 0)
+    if (virCgroupBindMount(cgroup, "/.oldroot/", sec_mount_options) < 0)
         goto cleanup;
 
     /* Mounts /dev */
@@ -2143,6 +2137,20 @@ static int lxcContainerDropCapabilities(virDomainDefPtr def ATTRIBUTE_UNUSED,
 
 
 /**
+ * lxcAttach_ns:
+ * @ns_fd: array of namespaces to attach
+ */
+static int lxcAttachNS(int *ns_fd)
+{
+    if (ns_fd &&
+        virProcessSetNamespaces((size_t)VIR_LXC_DOMAIN_NAMESPACE_LAST,
+                                ns_fd) < 0)
+        return -1;
+    return 0;
+}
+
+
+/**
  * lxcContainerChild:
  * @data: pointer to container arguments
  *
@@ -2169,6 +2177,12 @@ static int lxcContainerChild(void *data)
         virReportError(VIR_ERR_INTERNAL_ERROR,
                        "%s", _("lxcChild() passed invalid vm definition"));
         goto cleanup;
+    }
+
+    if (lxcAttachNS(argv->nsInheritFDs) < 0) {
+        virReportError(VIR_ERR_SYSTEM_ERROR, "%s",
+                       _("failed to attach the namespace"));
+        return -1;
     }
 
     /* Wait for controller to finish setup tasks, including
@@ -2209,7 +2223,7 @@ static int lxcContainerChild(void *data)
 
     VIR_DEBUG("Container TTY path: %s", ttyPath);
 
-    ttyfd = open(ttyPath, O_RDWR|O_NOCTTY);
+    ttyfd = open(ttyPath, O_RDWR);
     if (ttyfd < 0) {
         virReportSystemError(errno,
                              _("Failed to open tty %s"),
@@ -2341,6 +2355,7 @@ int lxcContainerStart(virDomainDefPtr def,
                       int *passFDs,
                       int control,
                       int handshakefd,
+                      int *nsInheritFDs,
                       size_t nttyPaths,
                       char **ttyPaths)
 {
@@ -2358,7 +2373,8 @@ int lxcContainerStart(virDomainDefPtr def,
         .monitor = control,
         .nttyPaths = nttyPaths,
         .ttyPaths = ttyPaths,
-        .handshakefd = handshakefd
+        .handshakefd = handshakefd,
+        .nsInheritFDs = nsInheritFDs,
     };
 
     /* allocate a stack for the container */
@@ -2367,7 +2383,7 @@ int lxcContainerStart(virDomainDefPtr def,
 
     stacktop = stack + stacksize;
 
-    cflags = CLONE_NEWPID|CLONE_NEWNS|CLONE_NEWUTS|CLONE_NEWIPC|SIGCHLD;
+    cflags = CLONE_NEWPID|CLONE_NEWNS|SIGCHLD;
 
     if (userns_required(def)) {
         if (userns_supported()) {
@@ -2380,10 +2396,32 @@ int lxcContainerStart(virDomainDefPtr def,
             return -1;
         }
     }
+    if (!nsInheritFDs || nsInheritFDs[VIR_LXC_DOMAIN_NAMESPACE_SHARENET] == -1) {
+        if (lxcNeedNetworkNamespace(def)) {
+            VIR_DEBUG("Enable network namespaces");
+            cflags |= CLONE_NEWNET;
+        }
+    } else {
+        if (lxcNeedNetworkNamespace(def)) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("Config askes for inherit net namespace "
+                             "as well as private network interfaces"));
+            VIR_FREE(stack);
+            return -1;
+        }
+        VIR_DEBUG("Inheriting a net namespace");
+    }
 
-    if (lxcNeedNetworkNamespace(def)) {
-        VIR_DEBUG("Enable network namespaces");
-        cflags |= CLONE_NEWNET;
+    if (!nsInheritFDs || nsInheritFDs[VIR_LXC_DOMAIN_NAMESPACE_SHAREIPC] == -1) {
+        cflags |= CLONE_NEWIPC;
+    } else {
+        VIR_DEBUG("Inheriting an IPC namespace");
+    }
+
+    if (!nsInheritFDs || nsInheritFDs[VIR_LXC_DOMAIN_NAMESPACE_SHAREUTS] == -1) {
+        cflags |= CLONE_NEWUTS;
+    } else {
+        VIR_DEBUG("Inheriting a UTS namespace");
     }
 
     VIR_DEBUG("Cloning container init process");

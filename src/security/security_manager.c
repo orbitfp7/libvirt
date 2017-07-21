@@ -37,9 +37,7 @@ struct _virSecurityManager {
     virObjectLockable parent;
 
     virSecurityDriverPtr drv;
-    bool allowDiskFormatProbing;
-    bool defaultConfined;
-    bool requireConfined;
+    unsigned int flags;
     const char *virtDriver;
     void *privateData;
 };
@@ -76,9 +74,7 @@ VIR_ONCE_GLOBAL_INIT(virSecurityManager);
 static virSecurityManagerPtr
 virSecurityManagerNewDriver(virSecurityDriverPtr drv,
                             const char *virtDriver,
-                            bool allowDiskFormatProbing,
-                            bool defaultConfined,
-                            bool requireConfined)
+                            unsigned int flags)
 {
     virSecurityManagerPtr mgr;
     char *privateData;
@@ -86,11 +82,10 @@ virSecurityManagerNewDriver(virSecurityDriverPtr drv,
     if (virSecurityManagerInitialize() < 0)
         return NULL;
 
-    VIR_DEBUG("drv=%p (%s) virtDriver=%s allowDiskFormatProbing=%d "
-              "defaultConfined=%d requireConfined=%d",
-              drv, drv->name, virtDriver,
-              allowDiskFormatProbing, defaultConfined,
-              requireConfined);
+    VIR_DEBUG("drv=%p (%s) virtDriver=%s flags=%x",
+              drv, drv->name, virtDriver, flags);
+
+    virCheckFlags(VIR_SECURITY_MANAGER_NEW_MASK, NULL);
 
     if (VIR_ALLOC_N(privateData, drv->privateDataLen) < 0)
         return NULL;
@@ -101,9 +96,7 @@ virSecurityManagerNewDriver(virSecurityDriverPtr drv,
     }
 
     mgr->drv = drv;
-    mgr->allowDiskFormatProbing = allowDiskFormatProbing;
-    mgr->defaultConfined = defaultConfined;
-    mgr->requireConfined = requireConfined;
+    mgr->flags = flags;
     mgr->virtDriver = virtDriver;
     mgr->privateData = privateData;
 
@@ -122,9 +115,7 @@ virSecurityManagerNewStack(virSecurityManagerPtr primary)
     virSecurityManagerPtr mgr =
         virSecurityManagerNewDriver(&virSecurityDriverStack,
                                     virSecurityManagerGetDriver(primary),
-                                    virSecurityManagerGetAllowDiskFormatProbing(primary),
-                                    virSecurityManagerGetDefaultConfined(primary),
-                                    virSecurityManagerGetRequireConfined(primary));
+                                    primary->flags);
 
     if (!mgr)
         return NULL;
@@ -139,7 +130,7 @@ int
 virSecurityManagerStackAddNested(virSecurityManagerPtr stack,
                                  virSecurityManagerPtr nested)
 {
-    if (!STREQ("stack", stack->drv->name))
+    if (STRNEQ("stack", stack->drv->name))
         return -1;
     return virSecurityStackAddNested(stack, nested);
 }
@@ -149,18 +140,17 @@ virSecurityManagerPtr
 virSecurityManagerNewDAC(const char *virtDriver,
                          uid_t user,
                          gid_t group,
-                         bool allowDiskFormatProbing,
-                         bool defaultConfined,
-                         bool requireConfined,
-                         bool dynamicOwnership,
+                         unsigned int flags,
                          virSecurityManagerDACChownCallback chownCallback)
 {
-    virSecurityManagerPtr mgr =
-        virSecurityManagerNewDriver(&virSecurityDriverDAC,
-                                    virtDriver,
-                                    allowDiskFormatProbing,
-                                    defaultConfined,
-                                    requireConfined);
+    virSecurityManagerPtr mgr;
+
+    virCheckFlags(VIR_SECURITY_MANAGER_NEW_MASK |
+                  VIR_SECURITY_MANAGER_DYNAMIC_OWNERSHIP, NULL);
+
+    mgr = virSecurityManagerNewDriver(&virSecurityDriverDAC,
+                                      virtDriver,
+                                      flags & VIR_SECURITY_MANAGER_NEW_MASK);
 
     if (!mgr)
         return NULL;
@@ -170,7 +160,7 @@ virSecurityManagerNewDAC(const char *virtDriver,
         return NULL;
     }
 
-    virSecurityDACSetDynamicOwnership(mgr, dynamicOwnership);
+    virSecurityDACSetDynamicOwnership(mgr, flags & VIR_SECURITY_MANAGER_DYNAMIC_OWNERSHIP);
     virSecurityDACSetChownCallback(mgr, chownCallback);
 
     return mgr;
@@ -180,9 +170,7 @@ virSecurityManagerNewDAC(const char *virtDriver,
 virSecurityManagerPtr
 virSecurityManagerNew(const char *name,
                       const char *virtDriver,
-                      bool allowDiskFormatProbing,
-                      bool defaultConfined,
-                      bool requireConfined)
+                      unsigned int flags)
 {
     virSecurityDriverPtr drv = virSecurityDriverLookup(name, virtDriver);
     if (!drv)
@@ -190,13 +178,13 @@ virSecurityManagerNew(const char *name,
 
     /* driver "none" needs some special handling of *Confined bools */
     if (STREQ(drv->name, "none")) {
-        if (requireConfined) {
+        if (flags & VIR_SECURITY_MANAGER_REQUIRE_CONFINED) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                            _("Security driver \"none\" cannot create confined guests"));
             return NULL;
         }
 
-        if (defaultConfined) {
+        if (flags & VIR_SECURITY_MANAGER_DEFAULT_CONFINED) {
             if (name != NULL) {
                 VIR_WARN("Configured security driver \"none\" disables default"
                          " policy to create confined guests");
@@ -204,15 +192,13 @@ virSecurityManagerNew(const char *name,
                 VIR_DEBUG("Auto-probed security driver is \"none\";"
                           " confined guests will not be created");
             }
-            defaultConfined = false;
+            flags &= ~VIR_SECURITY_MANAGER_DEFAULT_CONFINED;
         }
     }
 
     return virSecurityManagerNewDriver(drv,
                                        virtDriver,
-                                       allowDiskFormatProbing,
-                                       defaultConfined,
-                                       requireConfined);
+                                       flags);
 }
 
 
@@ -315,21 +301,28 @@ virSecurityManagerGetBaseLabel(virSecurityManagerPtr mgr,
 bool
 virSecurityManagerGetAllowDiskFormatProbing(virSecurityManagerPtr mgr)
 {
-    return mgr->allowDiskFormatProbing;
+    return mgr->flags & VIR_SECURITY_MANAGER_ALLOW_DISK_PROBE;
 }
 
 
 bool
 virSecurityManagerGetDefaultConfined(virSecurityManagerPtr mgr)
 {
-    return mgr->defaultConfined;
+    return mgr->flags & VIR_SECURITY_MANAGER_DEFAULT_CONFINED;
 }
 
 
 bool
 virSecurityManagerGetRequireConfined(virSecurityManagerPtr mgr)
 {
-    return mgr->requireConfined;
+    return mgr->flags & VIR_SECURITY_MANAGER_REQUIRE_CONFINED;
+}
+
+
+bool
+virSecurityManagerGetPrivileged(virSecurityManagerPtr mgr)
+{
+    return mgr->flags & VIR_SECURITY_MANAGER_PRIVILEGED;
 }
 
 
@@ -596,7 +589,7 @@ virSecurityManagerGenLabel(virSecurityManagerPtr mgr,
         }
 
         if (seclabel->type == VIR_DOMAIN_SECLABEL_DEFAULT) {
-            if (sec_managers[i]->defaultConfined) {
+            if (virSecurityManagerGetDefaultConfined(sec_managers[i])) {
                 seclabel->type = VIR_DOMAIN_SECLABEL_DYNAMIC;
             } else {
                 seclabel->type = VIR_DOMAIN_SECLABEL_NONE;
@@ -605,7 +598,7 @@ virSecurityManagerGenLabel(virSecurityManagerPtr mgr,
         }
 
         if (seclabel->type == VIR_DOMAIN_SECLABEL_NONE) {
-            if (sec_managers[i]->requireConfined) {
+            if (virSecurityManagerGetRequireConfined(sec_managers[i])) {
                 virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
                                _("Unconfined guests are not allowed on this host"));
                 goto cleanup;
@@ -985,6 +978,23 @@ virSecurityManagerSetHugepages(virSecurityManagerPtr mgr,
         int ret;
         virObjectLock(mgr);
         ret = mgr->drv->domainSetSecurityHugepages(mgr, vm, path);
+        virObjectUnlock(mgr);
+        return ret;
+    }
+
+    return 0;
+}
+
+
+int
+virSecurityManagerDomainSetDirLabel(virSecurityManagerPtr mgr,
+                                    virDomainDefPtr vm,
+                                    const char *path)
+{
+    if (mgr->drv->domainSetDirLabel) {
+        int ret;
+        virObjectLock(mgr);
+        ret = mgr->drv->domainSetDirLabel(mgr, vm, path);
         virObjectUnlock(mgr);
         return ret;
     }

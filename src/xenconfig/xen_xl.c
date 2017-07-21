@@ -27,13 +27,16 @@
 
 #include "virconf.h"
 #include "virerror.h"
+#include "virlog.h"
 #include "domain_conf.h"
 #include "viralloc.h"
 #include "virstring.h"
 #include "virstoragefile.h"
 #include "xen_xl.h"
 
-#define VIR_FROM_THIS VIR_FROM_NONE
+#define VIR_FROM_THIS VIR_FROM_XENXL
+
+VIR_LOG_INIT("xen.xen_xl");
 
 /*
  * Xen provides a libxl utility library, with several useful functions,
@@ -58,6 +61,112 @@ extern int xlu_disk_parse(XLU_Config *cfg,
                           libxl_device_disk *disk);
 #endif
 
+static int xenParseCmdline(virConfPtr conf, char **r_cmdline)
+{
+    char *cmdline = NULL;
+    const char *root, *extra, *buf;
+
+    if (xenConfigGetString(conf, "cmdline", &buf, NULL) < 0)
+        return -1;
+
+    if (xenConfigGetString(conf, "root", &root, NULL) < 0)
+        return -1;
+
+    if (xenConfigGetString(conf, "extra", &extra, NULL) < 0)
+        return -1;
+
+    if (buf) {
+        if (VIR_STRDUP(cmdline, buf) < 0)
+            return -1;
+        if (root || extra)
+            VIR_WARN("ignoring root= and extra= in favour of cmdline=");
+    } else {
+        if (root && extra) {
+            if (virAsprintf(&cmdline, "root=%s %s", root, extra) < 0)
+                return -1;
+        } else if (root) {
+            if (virAsprintf(&cmdline, "root=%s", root) < 0)
+                return -1;
+        } else if (extra) {
+            if (VIR_STRDUP(cmdline, extra) < 0)
+                return -1;
+        }
+    }
+
+    *r_cmdline = cmdline;
+    return 0;
+}
+
+static int
+xenParseXLOS(virConfPtr conf, virDomainDefPtr def, virCapsPtr caps)
+{
+    size_t i;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        const char *boot;
+
+        for (i = 0; i < caps->nguests; i++) {
+            if (caps->guests[i]->ostype == VIR_DOMAIN_OSTYPE_HVM &&
+                caps->guests[i]->arch.id == def->os.arch) {
+                if (VIR_ALLOC(def->os.loader) < 0 ||
+                    VIR_STRDUP(def->os.loader->path,
+                               caps->guests[i]->arch.defaultInfo.loader) < 0)
+                    return -1;
+            }
+        }
+
+#ifdef LIBXL_HAVE_BUILDINFO_KERNEL
+        if (xenConfigCopyStringOpt(conf, "kernel", &def->os.kernel) < 0)
+            return -1;
+
+        if (xenConfigCopyStringOpt(conf, "ramdisk", &def->os.initrd) < 0)
+            return -1;
+
+        if (xenParseCmdline(conf, &def->os.cmdline) < 0)
+            return -1;
+#endif
+
+        if (xenConfigGetString(conf, "boot", &boot, "c") < 0)
+            return -1;
+
+        for (i = 0; i < VIR_DOMAIN_BOOT_LAST && boot[i]; i++) {
+            switch (boot[i]) {
+            case 'a':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_FLOPPY;
+                break;
+            case 'd':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_CDROM;
+                break;
+            case 'n':
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_NET;
+                break;
+            case 'c':
+            default:
+                def->os.bootDevs[i] = VIR_DOMAIN_BOOT_DISK;
+                break;
+            }
+            def->os.nBootDevs++;
+        }
+    } else {
+        if (xenConfigCopyStringOpt(conf, "bootloader", &def->os.bootloader) < 0)
+            return -1;
+        if (xenConfigCopyStringOpt(conf, "bootargs", &def->os.bootloaderArgs) < 0)
+            return -1;
+
+        if (xenConfigCopyStringOpt(conf, "kernel", &def->os.kernel) < 0)
+            return -1;
+
+        if (xenConfigCopyStringOpt(conf, "ramdisk", &def->os.initrd) < 0)
+            return -1;
+
+        if (xenParseCmdline(conf, &def->os.cmdline) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+
 static int
 xenParseXLSpice(virConfPtr conf, virDomainDefPtr def)
 {
@@ -66,7 +175,7 @@ xenParseXLSpice(virConfPtr conf, virDomainDefPtr def)
     char *listenAddr = NULL;
     int val;
 
-    if (STREQ(def->os.type, "hvm")) {
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
         if (xenConfigGetBool(conf, "spice", &val, 0) < 0)
             return -1;
 
@@ -99,23 +208,29 @@ xenParseXLSpice(virConfPtr conf, virDomainDefPtr def)
 
             if (xenConfigGetBool(conf, "spicedisable_ticketing", &val, 0) < 0)
                 goto cleanup;
-            if (val) {
-                if (xenConfigCopyStringOpt(conf, "spicepasswd",
-                                           &graphics->data.spice.auth.passwd) < 0)
+            if (!val) {
+                if (xenConfigCopyString(conf, "spicepasswd",
+                                        &graphics->data.spice.auth.passwd) < 0)
                     goto cleanup;
             }
 
             if (xenConfigGetBool(conf, "spiceagent_mouse",
-                                 &graphics->data.spice.mousemode, 0) < 0)
-                goto cleanup;
-            if (xenConfigGetBool(conf, "spicedvagent", &val, 0) < 0)
+                                 &val, 0) < 0)
                 goto cleanup;
             if (val) {
-                if (xenConfigGetBool(conf, "spice_clipboard_sharing",
-                                     &graphics->data.spice.copypaste,
-                                     0) < 0)
-                    goto cleanup;
+                graphics->data.spice.mousemode =
+                    VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_CLIENT;
+            } else {
+                graphics->data.spice.mousemode =
+                    VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_SERVER;
             }
+
+            if (xenConfigGetBool(conf, "spice_clipboard_sharing", &val, 0) < 0)
+                goto cleanup;
+            if (val)
+                graphics->data.spice.copypaste = VIR_TRISTATE_BOOL_YES;
+            else
+                graphics->data.spice.copypaste = VIR_TRISTATE_BOOL_NO;
 
             if (VIR_ALLOC_N(def->graphics, 1) < 0)
                 goto cleanup;
@@ -193,7 +308,7 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
             if (xlu_disk_parse(xluconf, 1, &disk_spec, libxldisk))
                 goto fail;
 
-            if (!(disk = virDomainDiskDefNew()))
+            if (!(disk = virDomainDiskDefNew(NULL)))
                 goto fail;
 
             if (VIR_STRDUP(disk->dst, libxldisk->vdev) < 0)
@@ -260,7 +375,8 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
                 }
             }
 
-            if (STRPREFIX(libxldisk->vdev, "xvd") || !STREQ(def->os.type, "hvm"))
+            if (STRPREFIX(libxldisk->vdev, "xvd") ||
+                def->os.type != VIR_DOMAIN_OSTYPE_HVM)
                 disk->bus = VIR_DOMAIN_DISK_BUS_XEN;
             else if (STRPREFIX(libxldisk->vdev, "sd"))
                 disk->bus = VIR_DOMAIN_DISK_BUS_SCSI;
@@ -289,19 +405,77 @@ xenParseXLDisk(virConfPtr conf, virDomainDefPtr def)
     goto cleanup;
 }
 
+static int
+xenParseXLInputDevs(virConfPtr conf, virDomainDefPtr def)
+{
+    const char *str;
+    virConfValuePtr val;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        val = virConfGetValue(conf, "usbdevice");
+        /* usbdevice can be defined as either a single string or a list */
+        if (val && val->type == VIR_CONF_LIST) {
+#ifdef LIBXL_HAVE_BUILDINFO_USBDEVICE_LIST
+            val = val->list;
+#else
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("multiple USB devices not supported"));
+            return -1;
+#endif
+        }
+        /* otherwise val->next is NULL, so can be handled by the same code */
+        while (val) {
+            if (val->type != VIR_CONF_STRING) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("config value %s was malformed"),
+                               "usbdevice");
+                return -1;
+            }
+            str = val->str;
+
+            if (str &&
+                    (STREQ(str, "tablet") ||
+                     STREQ(str, "mouse") ||
+                     STREQ(str, "keyboard"))) {
+                virDomainInputDefPtr input;
+                if (VIR_ALLOC(input) < 0)
+                    return -1;
+
+                input->bus = VIR_DOMAIN_INPUT_BUS_USB;
+                if (STREQ(str, "mouse"))
+                    input->type = VIR_DOMAIN_INPUT_TYPE_MOUSE;
+                else if (STREQ(str, "tablet"))
+                    input->type = VIR_DOMAIN_INPUT_TYPE_TABLET;
+                else if (STREQ(str, "keyboard"))
+                    input->type = VIR_DOMAIN_INPUT_TYPE_KBD;
+                if (VIR_APPEND_ELEMENT(def->inputs, def->ninputs, input) < 0) {
+                    virDomainInputDefFree(input);
+                    return -1;
+                }
+            }
+            val = val->next;
+        }
+    }
+    return 0;
+}
 
 virDomainDefPtr
-xenParseXL(virConfPtr conf, virCapsPtr caps, int xendConfigVersion)
+xenParseXL(virConfPtr conf,
+           virCapsPtr caps,
+           virDomainXMLOptionPtr xmlopt)
 {
     virDomainDefPtr def = NULL;
 
-    if (VIR_ALLOC(def) < 0)
+    if (!(def = virDomainDefNew()))
         return NULL;
 
     def->virtType = VIR_DOMAIN_VIRT_XEN;
     def->id = -1;
 
-    if (xenParseConfigCommon(conf, def, caps, xendConfigVersion) < 0)
+    if (xenParseConfigCommon(conf, def, caps) < 0)
+        goto cleanup;
+
+    if (xenParseXLOS(conf, def, caps) < 0)
         goto cleanup;
 
     if (xenParseXLDisk(conf, def) < 0)
@@ -310,11 +484,97 @@ xenParseXL(virConfPtr conf, virCapsPtr caps, int xendConfigVersion)
     if (xenParseXLSpice(conf, def) < 0)
         goto cleanup;
 
+    if (xenParseXLInputDevs(conf, def) < 0)
+        goto cleanup;
+
+    if (virDomainDefPostParse(def, caps, VIR_DOMAIN_DEF_PARSE_ABI_UPDATE,
+                              xmlopt) < 0)
+        goto cleanup;
+
     return def;
 
  cleanup:
     virDomainDefFree(def);
     return NULL;
+}
+
+
+static int
+xenFormatXLOS(virConfPtr conf, virDomainDefPtr def)
+{
+    size_t i;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        char boot[VIR_DOMAIN_BOOT_LAST+1];
+        if (xenConfigSetString(conf, "builder", "hvm") < 0)
+            return -1;
+
+#ifdef LIBXL_HAVE_BUILDINFO_KERNEL
+        if (def->os.kernel &&
+            xenConfigSetString(conf, "kernel", def->os.kernel) < 0)
+            return -1;
+
+        if (def->os.initrd &&
+            xenConfigSetString(conf, "ramdisk", def->os.initrd) < 0)
+            return -1;
+
+        if (def->os.cmdline &&
+            xenConfigSetString(conf, "cmdline", def->os.cmdline) < 0)
+            return -1;
+#endif
+
+        for (i = 0; i < def->os.nBootDevs; i++) {
+            switch (def->os.bootDevs[i]) {
+            case VIR_DOMAIN_BOOT_FLOPPY:
+                boot[i] = 'a';
+                break;
+            case VIR_DOMAIN_BOOT_CDROM:
+                boot[i] = 'd';
+                break;
+            case VIR_DOMAIN_BOOT_NET:
+                boot[i] = 'n';
+                break;
+            case VIR_DOMAIN_BOOT_DISK:
+            default:
+                boot[i] = 'c';
+                break;
+            }
+        }
+
+        if (!def->os.nBootDevs) {
+            boot[0] = 'c';
+            boot[1] = '\0';
+        } else {
+            boot[def->os.nBootDevs] = '\0';
+        }
+
+        if (xenConfigSetString(conf, "boot", boot) < 0)
+            return -1;
+
+        /* XXX floppy disks */
+    } else {
+        if (def->os.bootloader &&
+             xenConfigSetString(conf, "bootloader", def->os.bootloader) < 0)
+            return -1;
+
+         if (def->os.bootloaderArgs &&
+             xenConfigSetString(conf, "bootargs", def->os.bootloaderArgs) < 0)
+            return -1;
+
+         if (def->os.kernel &&
+             xenConfigSetString(conf, "kernel", def->os.kernel) < 0)
+            return -1;
+
+         if (def->os.initrd &&
+             xenConfigSetString(conf, "ramdisk", def->os.initrd) < 0)
+            return -1;
+
+         if (def->os.cmdline &&
+             xenConfigSetString(conf, "cmdline", def->os.cmdline) < 0)
+            return -1;
+     } /* !hvm */
+
+    return 0;
 }
 
 
@@ -435,9 +695,12 @@ static int
 xenFormatXLSpice(virConfPtr conf, virDomainDefPtr def)
 {
     const char *listenAddr = NULL;
+    virDomainGraphicsDefPtr graphics;
 
-    if (STREQ(def->os.type, "hvm")) {
-        if (def->graphics[0]->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        graphics = def->graphics[0];
+
+        if (graphics->type == VIR_DOMAIN_GRAPHICS_TYPE_SPICE) {
             /* set others to false but may not be necessary */
             if (xenConfigSetInt(conf, "sdl", 0) < 0)
                 return -1;
@@ -448,39 +711,61 @@ xenFormatXLSpice(virConfPtr conf, virDomainDefPtr def)
             if (xenConfigSetInt(conf, "spice", 1) < 0)
                 return -1;
 
-            if (xenConfigSetInt(conf, "spiceport",
-                                def->graphics[0]->data.spice.port) < 0)
-                return -1;
-
-            if (xenConfigSetInt(conf, "spicetls_port",
-                                def->graphics[0]->data.spice.tlsPort) < 0)
-                return -1;
-
-            if (def->graphics[0]->data.spice.auth.passwd) {
-                if (xenConfigSetInt(conf, "spicedisable_ticketing", 1) < 0)
-                    return -1;
-
-                if (def->graphics[0]->data.spice.auth.passwd &&
-                    xenConfigSetString(conf, "spicepasswd",
-                                def->graphics[0]->data.spice.auth.passwd) < 0)
-                    return -1;
-            }
-
-            listenAddr = virDomainGraphicsListenGetAddress(def->graphics[0], 0);
+            listenAddr = virDomainGraphicsListenGetAddress(graphics, 0);
             if (listenAddr &&
                 xenConfigSetString(conf, "spicehost", listenAddr) < 0)
                 return -1;
 
-            if (xenConfigSetInt(conf, "spiceagent_mouse",
-                                def->graphics[0]->data.spice.mousemode) < 0)
+            if (xenConfigSetInt(conf, "spiceport",
+                                graphics->data.spice.port) < 0)
                 return -1;
 
-            if (def->graphics[0]->data.spice.copypaste) {
-                if (xenConfigSetInt(conf, "spicedvagent", 1) < 0)
-                    return -1;
-                if (xenConfigSetInt(conf, "spice_clipboard_sharing",
-                                def->graphics[0]->data.spice.copypaste) < 0)
+            if (xenConfigSetInt(conf, "spicetls_port",
+                                graphics->data.spice.tlsPort) < 0)
                 return -1;
+
+            if (graphics->data.spice.auth.passwd) {
+                if (xenConfigSetInt(conf, "spicedisable_ticketing", 0) < 0)
+                    return -1;
+
+                if (xenConfigSetString(conf, "spicepasswd",
+                                       graphics->data.spice.auth.passwd) < 0)
+                    return -1;
+            } else {
+                if (xenConfigSetInt(conf, "spicedisable_ticketing", 1) < 0)
+                    return -1;
+            }
+
+            if (graphics->data.spice.mousemode) {
+                switch (graphics->data.spice.mousemode) {
+                case VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_SERVER:
+                    if (xenConfigSetInt(conf, "spiceagent_mouse", 0) < 0)
+                        return -1;
+                    break;
+                case VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_CLIENT:
+                    if (xenConfigSetInt(conf, "spiceagent_mouse", 1) < 0)
+                        return -1;
+                    /*
+                     * spicevdagent must be enabled if using client
+                     * mode mouse
+                     */
+                    if (xenConfigSetInt(conf, "spicevdagent", 1) < 0)
+                        return -1;
+                    break;
+                default:
+                    break;
+                }
+            }
+
+            if (graphics->data.spice.copypaste == VIR_TRISTATE_BOOL_YES) {
+                if (xenConfigSetInt(conf, "spice_clipboard_sharing", 1) < 0)
+                    return -1;
+                /*
+                 * spicevdagent must be enabled if spice_clipboard_sharing
+                 * is enabled
+                 */
+                if (xenConfigSetInt(conf, "spicevdagent", 1) < 0)
+                    return -1;
             }
         }
     }
@@ -488,22 +773,96 @@ xenFormatXLSpice(virConfPtr conf, virDomainDefPtr def)
     return 0;
 }
 
+static int
+xenFormatXLInputDevs(virConfPtr conf, virDomainDefPtr def)
+{
+    size_t i;
+    const char *devtype;
+    virConfValuePtr usbdevices = NULL, lastdev;
+
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
+        if (VIR_ALLOC(usbdevices) < 0)
+            goto error;
+
+        usbdevices->type = VIR_CONF_LIST;
+        usbdevices->list = NULL;
+        lastdev = NULL;
+        for (i = 0; i < def->ninputs; i++) {
+            if (def->inputs[i]->bus == VIR_DOMAIN_INPUT_BUS_USB) {
+                if (xenConfigSetInt(conf, "usb", 1) < 0)
+                    goto error;
+
+                switch (def->inputs[i]->type) {
+                    case VIR_DOMAIN_INPUT_TYPE_MOUSE:
+                        devtype = "mouse";
+                        break;
+                    case VIR_DOMAIN_INPUT_TYPE_TABLET:
+                        devtype = "tablet";
+                        break;
+                    case VIR_DOMAIN_INPUT_TYPE_KBD:
+                        devtype = "keyboard";
+                        break;
+                    default:
+                        continue;
+                }
+
+                if (lastdev == NULL) {
+                    if (VIR_ALLOC(lastdev) < 0)
+                        goto error;
+                    usbdevices->list = lastdev;
+                } else {
+                    if (VIR_ALLOC(lastdev->next) < 0)
+                        goto error;
+                    lastdev = lastdev->next;
+                }
+                lastdev->type = VIR_CONF_STRING;
+                if (VIR_STRDUP(lastdev->str, devtype) < 0)
+                    goto error;
+            }
+        }
+        if (usbdevices->list != NULL) {
+            if (usbdevices->list->next == NULL) {
+                /* for compatibility with Xen <= 4.2, use old syntax when
+                 * only one device present */
+                if (xenConfigSetString(conf, "usbdevice", usbdevices->list->str) < 0)
+                    goto error;
+                virConfFreeValue(usbdevices);
+            } else {
+                virConfSetValue(conf, "usbdevice", usbdevices);
+            }
+        } else {
+            VIR_FREE(usbdevices);
+        }
+    }
+
+    return 0;
+ error:
+    virConfFreeValue(usbdevices);
+    return -1;
+}
+
 
 virConfPtr
-xenFormatXL(virDomainDefPtr def, virConnectPtr conn, int xendConfigVersion)
+xenFormatXL(virDomainDefPtr def, virConnectPtr conn)
 {
     virConfPtr conf = NULL;
 
     if (!(conf = virConfNew()))
         goto cleanup;
 
-    if (xenFormatConfigCommon(conf, def, conn, xendConfigVersion) < 0)
+    if (xenFormatConfigCommon(conf, def, conn) < 0)
+        goto cleanup;
+
+    if (xenFormatXLOS(conf, def) < 0)
         goto cleanup;
 
     if (xenFormatXLDomainDisks(conf, def) < 0)
         goto cleanup;
 
     if (xenFormatXLSpice(conf, def) < 0)
+        goto cleanup;
+
+    if (xenFormatXLInputDevs(conf, def) < 0)
         goto cleanup;
 
     return conf;

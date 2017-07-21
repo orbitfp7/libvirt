@@ -12,12 +12,6 @@
 
 #define VIR_FROM_THIS VIR_FROM_NONE
 
-#define TEST_ERROR(...)                             \
-    do {                                            \
-        if (virTestGetDebug())                      \
-            fprintf(stderr, __VA_ARGS__);           \
-    } while (0)
-
 struct testInfo {
     int doEscape;
 };
@@ -50,7 +44,7 @@ static int testBufInfiniteLoop(const void *data)
  out:
     bufret = virBufferContentAndReset(buf);
     if (!bufret) {
-        TEST_ERROR("Buffer had error set");
+        VIR_TEST_DEBUG("Buffer had error set");
         ret = -1;
     }
 
@@ -70,54 +64,54 @@ static int testBufAutoIndent(const void *data ATTRIBUTE_UNUSED)
 
     if (virBufferGetIndent(buf, false) != 0 ||
         virBufferGetIndent(buf, true) != 0) {
-        TEST_ERROR("Wrong indentation");
+        VIR_TEST_DEBUG("Wrong indentation");
         ret = -1;
     }
     virBufferAdjustIndent(buf, 3);
     if (STRNEQ(virBufferCurrentContent(buf), "")) {
-        TEST_ERROR("Wrong content");
+        VIR_TEST_DEBUG("Wrong content");
         ret = -1;
     }
     if (virBufferGetIndent(buf, false) != 3 ||
         virBufferGetIndent(buf, true) != 3 ||
         virBufferError(buf)) {
-        TEST_ERROR("Wrong indentation");
+        VIR_TEST_DEBUG("Wrong indentation");
         ret = -1;
     }
     virBufferAdjustIndent(buf, -2);
     if (virBufferGetIndent(buf, false) != 1 ||
         virBufferGetIndent(buf, true) != 1 ||
         virBufferError(buf)) {
-        TEST_ERROR("Wrong indentation");
+        VIR_TEST_DEBUG("Wrong indentation");
         ret = -1;
     }
     virBufferAdjustIndent(buf, -3);
     if (virBufferGetIndent(buf, false) != -1 ||
         virBufferGetIndent(buf, true) != -1 ||
         virBufferError(buf) != -1) {
-        TEST_ERROR("Usage error not flagged");
+        VIR_TEST_DEBUG("Usage error not flagged");
         ret = -1;
     }
     virBufferFreeAndReset(buf);
     if (virBufferGetIndent(buf, false) != 0 ||
         virBufferGetIndent(buf, true) != 0 ||
         virBufferError(buf)) {
-        TEST_ERROR("Reset didn't clear indentation");
+        VIR_TEST_DEBUG("Reset didn't clear indentation");
         ret = -1;
     }
     virBufferAdjustIndent(buf, 2);
     virBufferAddLit(buf, "1");
     if (virBufferError(buf)) {
-        TEST_ERROR("Buffer had error");
+        VIR_TEST_DEBUG("Buffer had error");
         return -1;
     }
     if (STRNEQ(virBufferCurrentContent(buf), "  1")) {
-        TEST_ERROR("Wrong content");
+        VIR_TEST_DEBUG("Wrong content");
         ret = -1;
     }
     if (virBufferGetIndent(buf, false) != 2 ||
         virBufferGetIndent(buf, true) != 0) {
-        TEST_ERROR("Wrong indentation");
+        VIR_TEST_DEBUG("Wrong indentation");
         ret = -1;
     }
     virBufferAddLit(buf, "\n");
@@ -138,7 +132,7 @@ static int testBufAutoIndent(const void *data ATTRIBUTE_UNUSED)
     virBufferAddChar(buf, '\n');
 
     if (virBufferError(buf)) {
-        TEST_ERROR("Buffer had error");
+        VIR_TEST_DEBUG("Buffer had error");
         return -1;
     }
 
@@ -175,7 +169,7 @@ static int testBufTrim(const void *data ATTRIBUTE_UNUSED)
     virBufferTrim(buf, ",", -1);
 
     if (virBufferError(buf)) {
-        TEST_ERROR("Buffer had error");
+        VIR_TEST_DEBUG("Buffer had error");
         return -1;
     }
 
@@ -187,7 +181,7 @@ static int testBufTrim(const void *data ATTRIBUTE_UNUSED)
 
     virBufferTrim(buf, NULL, -1);
     if (virBufferError(buf) != -1) {
-        TEST_ERROR("Usage error not flagged");
+        VIR_TEST_DEBUG("Usage error not flagged");
         goto cleanup;
     }
 
@@ -196,6 +190,187 @@ static int testBufTrim(const void *data ATTRIBUTE_UNUSED)
  cleanup:
     virBufferFreeAndReset(buf);
     VIR_FREE(result);
+    return ret;
+}
+
+static int testBufAddBuffer(const void *data ATTRIBUTE_UNUSED)
+{
+    virBuffer buf1 = VIR_BUFFER_INITIALIZER;
+    virBuffer buf2 = VIR_BUFFER_INITIALIZER;
+    virBuffer buf3 = VIR_BUFFER_INITIALIZER;
+    int ret = -1;
+    char *result = NULL;
+    const char *expected = \
+"  A long time ago, in a galaxy far,\n" \
+"  far away...\n"                       \
+"    It is a period of civil war.\n"    \
+"    Rebel spaceships, striking\n"      \
+"    from a hidden base, have won\n"    \
+"    their first victory against\n"     \
+"    the evil Galactic Empire.\n"       \
+"  During the battle, rebel\n"          \
+"  spies managed to steal secret\n"     \
+"  plans to the Empire's\n"             \
+"  ultimate weapon, the DEATH\n"        \
+"  STAR, an armored space\n"            \
+"  station with enough power to\n"      \
+"  destroy an entire planet.\n";
+
+    if (virBufferUse(&buf1)) {
+        VIR_TEST_DEBUG("buf1 already in use");
+        goto cleanup;
+    }
+
+    if (virBufferUse(&buf2)) {
+        VIR_TEST_DEBUG("buf2 already in use");
+        goto cleanup;
+    }
+
+    if (virBufferUse(&buf3)) {
+        VIR_TEST_DEBUG("buf3 already in use");
+        goto cleanup;
+    }
+
+    virBufferAdjustIndent(&buf1, 2);
+    virBufferAddLit(&buf1, "A long time ago, in a galaxy far,\n");
+    virBufferAddLit(&buf1, "far away...\n");
+
+    virBufferAdjustIndent(&buf2, 4);
+    virBufferAddLit(&buf2, "It is a period of civil war.\n");
+    virBufferAddLit(&buf2, "Rebel spaceships, striking\n");
+    virBufferAddLit(&buf2, "from a hidden base, have won\n");
+    virBufferAddLit(&buf2, "their first victory against\n");
+    virBufferAddLit(&buf2, "the evil Galactic Empire.\n");
+
+    virBufferAdjustIndent(&buf3, 2);
+    virBufferAddLit(&buf3, "During the battle, rebel\n");
+    virBufferAddLit(&buf3, "spies managed to steal secret\n");
+    virBufferAddLit(&buf3, "plans to the Empire's\n");
+    virBufferAddLit(&buf3, "ultimate weapon, the DEATH\n");
+    virBufferAddLit(&buf3, "STAR, an armored space\n");
+    virBufferAddLit(&buf3, "station with enough power to\n");
+    virBufferAddLit(&buf3, "destroy an entire planet.\n");
+
+    if (!virBufferUse(&buf1)) {
+        VIR_TEST_DEBUG("Error adding to buf1");
+        goto cleanup;
+    }
+
+    if (!virBufferUse(&buf2)) {
+        VIR_TEST_DEBUG("Error adding to buf2");
+        goto cleanup;
+    }
+
+    if (!virBufferUse(&buf3)) {
+        VIR_TEST_DEBUG("Error adding to buf3");
+        goto cleanup;
+    }
+
+    virBufferAddBuffer(&buf2, &buf3);
+
+    if (!virBufferUse(&buf2)) {
+        VIR_TEST_DEBUG("buf2 cleared mistakenly");
+        goto cleanup;
+    }
+
+    if (virBufferUse(&buf3)) {
+        VIR_TEST_DEBUG("buf3 is not clear even though it should be");
+        goto cleanup;
+    }
+
+    virBufferAddBuffer(&buf1, &buf2);
+
+    if (!virBufferUse(&buf1)) {
+        VIR_TEST_DEBUG("buf1 cleared mistakenly");
+        goto cleanup;
+    }
+
+    if (virBufferUse(&buf2)) {
+        VIR_TEST_DEBUG("buf2 is not clear even though it should be");
+        goto cleanup;
+    }
+
+    result = virBufferContentAndReset(&buf1);
+    if (STRNEQ_NULLABLE(result, expected)) {
+        virtTestDifference(stderr, expected, result);
+        goto cleanup;
+    }
+
+    ret = 0;
+ cleanup:
+    virBufferFreeAndReset(&buf1);
+    virBufferFreeAndReset(&buf2);
+    VIR_FREE(result);
+    return ret;
+}
+
+struct testBufAddStrData {
+    const char *data;
+    const char *expect;
+};
+
+static int
+testBufAddStr(const void *opaque ATTRIBUTE_UNUSED)
+{
+    const struct testBufAddStrData *data = opaque;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *actual;
+    int ret = -1;
+
+    virBufferAddLit(&buf, "<c>\n");
+    virBufferAdjustIndent(&buf, 2);
+    virBufferAddStr(&buf, data->data);
+    virBufferAdjustIndent(&buf, -2);
+    virBufferAddLit(&buf, "</c>");
+
+    if (!(actual = virBufferContentAndReset(&buf))) {
+        VIR_TEST_DEBUG("buf is empty");
+        goto cleanup;
+    }
+
+    if (STRNEQ_NULLABLE(actual, data->expect)) {
+        VIR_TEST_DEBUG("testBufAddStr(): Strings don't match:\n");
+        virtTestDifference(stderr, data->expect, actual);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(actual);
+    return ret;
+}
+
+
+static int
+testBufEscapeStr(const void *opaque ATTRIBUTE_UNUSED)
+{
+    const struct testBufAddStrData *data = opaque;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
+    char *actual;
+    int ret = -1;
+
+    virBufferAddLit(&buf, "<c>\n");
+    virBufferAdjustIndent(&buf, 2);
+    virBufferEscapeString(&buf, "<el>%s</el>\n", data->data);
+    virBufferAdjustIndent(&buf, -2);
+    virBufferAddLit(&buf, "</c>");
+
+    if (!(actual = virBufferContentAndReset(&buf))) {
+        VIR_TEST_DEBUG("buf is empty");
+        goto cleanup;
+    }
+
+    if (STRNEQ_NULLABLE(actual, data->expect)) {
+        VIR_TEST_DEBUG("testBufEscapeStr(): Strings don't match:\n");
+        virtTestDifference(stderr, data->expect, actual);
+        goto cleanup;
+    }
+
+    ret = 0;
+
+ cleanup:
+    VIR_FREE(actual);
     return ret;
 }
 
@@ -217,6 +392,35 @@ mymain(void)
     DO_TEST("VSprintf infinite loop", testBufInfiniteLoop, 0);
     DO_TEST("Auto-indentation", testBufAutoIndent, 0);
     DO_TEST("Trim", testBufTrim, 0);
+    DO_TEST("AddBuffer", testBufAddBuffer, 0);
+
+#define DO_TEST_ADD_STR(DATA, EXPECT)                                  \
+    do {                                                               \
+        struct testBufAddStrData info = { DATA, EXPECT };              \
+        if (virtTestRun("Buf: AddStr", testBufAddStr, &info) < 0)      \
+            ret = -1;                                                  \
+    } while (0)
+
+    DO_TEST_ADD_STR("", "<c>\n</c>");
+    DO_TEST_ADD_STR("<a/>", "<c>\n  <a/></c>");
+    DO_TEST_ADD_STR("<a/>\n", "<c>\n  <a/>\n</c>");
+    DO_TEST_ADD_STR("<b>\n  <a/>\n</b>\n", "<c>\n  <b>\n    <a/>\n  </b>\n</c>");
+
+#define DO_TEST_ESCAPE(data, expect)                                   \
+    do {                                                               \
+        struct testBufAddStrData info = { data, expect };              \
+        if (virtTestRun("Buf: EscapeStr", testBufEscapeStr, &info) < 0)   \
+            ret = -1;                                                  \
+    } while (0)
+
+    DO_TEST_ESCAPE("<td></td><td></td>",
+                   "<c>\n  <el>&lt;td&gt;&lt;/td&gt;&lt;td&gt;&lt;/td&gt;</el>\n</c>");
+    DO_TEST_ESCAPE("\007\"&&\"\x15",
+                   "<c>\n  <el>&quot;&amp;&amp;&quot;</el>\n</c>");
+    DO_TEST_ESCAPE(",,'..',,",
+                   "<c>\n  <el>,,&apos;..&apos;,,</el>\n</c>");
+    DO_TEST_ESCAPE("\x01\x01\x02\x03\x05\x08",
+                   "<c>\n  <el></el>\n</c>");
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

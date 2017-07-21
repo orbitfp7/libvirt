@@ -1,7 +1,7 @@
 /*
  * testutils.c: basic test utils
  *
- * Copyright (C) 2005-2014 Red Hat, Inc.
+ * Copyright (C) 2005-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -62,16 +62,12 @@
 
 VIR_LOG_INIT("tests.testutils");
 
-#define GETTIMEOFDAY(T) gettimeofday(T, NULL)
-#define DIFF_MSEC(T, U)                                 \
-    ((((int) ((T)->tv_sec - (U)->tv_sec)) * 1000000.0 + \
-      ((int) ((T)->tv_usec - (U)->tv_usec))) / 1000.0)
-
 #include "virfile.h"
 
 static unsigned int testDebug = -1;
 static unsigned int testVerbose = -1;
 static unsigned int testExpensive = -1;
+static unsigned int testRegenerate = -1;
 
 #ifdef TEST_OOM
 static unsigned int testOOM;
@@ -96,6 +92,26 @@ bool virtTestOOMActive(void)
     return testOOMActive;
 }
 
+static int virtTestUseTerminalColors(void)
+{
+    return isatty(STDIN_FILENO);
+}
+
+static unsigned int
+virTestGetFlag(const char *name)
+{
+    char *flagStr;
+    unsigned int flag;
+
+    if ((flagStr = getenv(name)) == NULL)
+        return 0;
+
+    if (virStrToLong_ui(flagStr, NULL, 10, &flag) < 0)
+        return 0;
+
+    return flag;
+}
+
 #ifdef TEST_OOM_TRACE
 static void virTestAllocHook(int nalloc ATTRIBUTE_UNUSED,
                              void *opaque ATTRIBUTE_UNUSED)
@@ -103,44 +119,6 @@ static void virTestAllocHook(int nalloc ATTRIBUTE_UNUSED,
     ntestAllocStack = backtrace(testAllocStack, ARRAY_CARDINALITY(testAllocStack));
 }
 #endif
-
-void virtTestResult(const char *name, int ret, const char *msg, ...)
-{
-    va_list vargs;
-    va_start(vargs, msg);
-
-    if (testCounter == 0 && !virTestGetVerbose())
-        fprintf(stderr, "      ");
-
-    testCounter++;
-    if (virTestGetVerbose()) {
-        fprintf(stderr, "%3zu) %-60s ", testCounter, name);
-        if (ret == 0) {
-            fprintf(stderr, "OK\n");
-        } else {
-            fprintf(stderr, "FAILED\n");
-            if (msg) {
-                char *str;
-                if (virVasprintfQuiet(&str, msg, vargs) == 0) {
-                    fprintf(stderr, "%s", str);
-                    VIR_FREE(str);
-                }
-            }
-        }
-    } else {
-        if (testCounter != 1 &&
-            !((testCounter-1) % 40)) {
-            fprintf(stderr, " %-3zu\n", (testCounter-1));
-            fprintf(stderr, "      ");
-        }
-        if (ret == 0)
-            fprintf(stderr, ".");
-        else
-            fprintf(stderr, "!");
-    }
-
-    va_end(vargs);
-}
 
 #ifdef TEST_OOM_TRACE
 static void
@@ -207,11 +185,20 @@ virtTestRun(const char *title,
 
     if (virTestGetVerbose()) {
         if (ret == 0)
-            fprintf(stderr, "OK\n");
+            if (virtTestUseTerminalColors())
+                fprintf(stderr, "\e[32mOK\e[0m\n");  /* green */
+            else
+                fprintf(stderr, "OK\n");
         else if (ret == EXIT_AM_SKIP)
-            fprintf(stderr, "SKIP\n");
+            if (virtTestUseTerminalColors())
+                fprintf(stderr, "\e[34m\e[1mSKIP\e[0m\n");  /* bold blue */
+            else
+                fprintf(stderr, "SKIP\n");
         else
-            fprintf(stderr, "FAILED\n");
+            if (virtTestUseTerminalColors())
+                fprintf(stderr, "\e[31m\e[1mFAILED\e[0m\n");  /* bold red */
+            else
+                fprintf(stderr, "FAILED\n");
     } else {
         if (testCounter != 1 &&
             !((testCounter-1) % 40)) {
@@ -446,23 +433,52 @@ virtTestCaptureProgramOutput(const char *const argv[] ATTRIBUTE_UNUSED,
 }
 #endif /* !WIN32 */
 
+static int
+virTestRewrapFile(const char *filename)
+{
+    int ret = -1;
+    char *outbuf = NULL;
+    char *script = NULL;
+    virCommandPtr cmd = NULL;
+
+    if (virAsprintf(&script, "%s/test-wrap-argv.pl", abs_srcdir) < 0)
+        goto cleanup;
+
+    cmd = virCommandNewArgList(script, filename, NULL);
+    virCommandSetOutputBuffer(cmd, &outbuf);
+    if (virCommandRun(cmd, NULL) < 0)
+        goto cleanup;
+
+    if (virFileWriteStr(filename, outbuf, 0666) < 0)
+        goto cleanup;
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(script);
+    virCommandFree(cmd);
+    VIR_FREE(outbuf);
+    return ret;
+}
 
 /**
- * @param stream: output stream write to differences to
+ * @param stream: output stream to write differences to
  * @param expect: expected output text
  * @param expectName: name designator of the expected text
  * @param actual: actual output text
  * @param actualName: name designator of the actual text
+ * @param regenerate: enable or disable regenerate functionality
  *
  * Display expected and actual output text, trimmed to first and last
  * characters at which differences occur. Displays names of the text strings if
  * non-NULL.
  */
-int virtTestDifferenceFull(FILE *stream,
-                           const char *expect,
-                           const char *expectName,
-                           const char *actual,
-                           const char *actualName)
+static int
+virtTestDifferenceFullInternal(FILE *stream,
+                               const char *expect,
+                               const char *expectName,
+                               const char *actual,
+                               const char *actualName,
+                               bool regenerate)
 {
     const char *expectStart;
     const char *expectEnd;
@@ -478,6 +494,18 @@ int virtTestDifferenceFull(FILE *stream,
     expectEnd = expect + (strlen(expect)-1);
     actualStart = actual;
     actualEnd = actual + (strlen(actual)-1);
+
+    if (expectName && regenerate && (virTestGetRegenerate() > 0)) {
+        if (virFileWriteStr(expectName, actual, 0666) < 0) {
+            virDispatchError(NULL);
+            return -1;
+        }
+
+        if (virTestRewrapFile(expectName) < 0) {
+            virDispatchError(NULL);
+            return -1;
+        }
+    }
 
     if (!virTestGetDebug())
         return 0;
@@ -522,23 +550,72 @@ int virtTestDifferenceFull(FILE *stream,
 }
 
 /**
- * @param stream: output stream write to differences to
+ * @param stream: output stream to write differences to
+ * @param expect: expected output text
+ * @param expectName: name designator of the expected text
+ * @param actual: actual output text
+ * @param actualName: name designator of the actual text
+ *
+ * Display expected and actual output text, trimmed to first and last
+ * characters at which differences occur. Displays names of the text strings if
+ * non-NULL. If VIR_TEST_REGENERATE_OUTPUT is used, this function will
+ * regenerate the expected file.
+ */
+int
+virtTestDifferenceFull(FILE *stream,
+                       const char *expect,
+                       const char *expectName,
+                       const char *actual,
+                       const char *actualName)
+{
+    return virtTestDifferenceFullInternal(stream, expect, expectName,
+                                          actual, actualName, true);
+}
+
+/**
+ * @param stream: output stream to write differences to
+ * @param expect: expected output text
+ * @param expectName: name designator of the expected text
+ * @param actual: actual output text
+ * @param actualName: name designator of the actual text
+ *
+ * Display expected and actual output text, trimmed to first and last
+ * characters at which differences occur. Displays names of the text strings if
+ * non-NULL. If VIR_TEST_REGENERATE_OUTPUT is used, this function will not
+ * regenerate the expected file.
+ */
+int
+virtTestDifferenceFullNoRegenerate(FILE *stream,
+                                   const char *expect,
+                                   const char *expectName,
+                                   const char *actual,
+                                   const char *actualName)
+{
+    return virtTestDifferenceFullInternal(stream, expect, expectName,
+                                          actual, actualName, false);
+}
+
+/**
+ * @param stream: output stream to write differences to
  * @param expect: expected output text
  * @param actual: actual output text
  *
  * Display expected and actual output text, trimmed to
  * first and last characters at which differences occur
  */
-int virtTestDifference(FILE *stream,
-                       const char *expect,
-                       const char *actual)
+int
+virtTestDifference(FILE *stream,
+                   const char *expect,
+                   const char *actual)
 {
-    return virtTestDifferenceFull(stream, expect, NULL, actual, NULL);
+    return virtTestDifferenceFullNoRegenerate(stream,
+                                              expect, NULL,
+                                              actual, NULL);
 }
 
 
 /**
- * @param stream: output stream write to differences to
+ * @param stream: output stream to write differences to
  * @param expect: expected output text
  * @param actual: actual output text
  *
@@ -599,6 +676,43 @@ int virtTestDifferenceBin(FILE *stream,
     fprintf(stream, "                                                                      ... ");
 
     return 0;
+}
+
+/*
+ * @param strcontent: String input content
+ * @param filename: File to compare strcontent against
+ */
+int
+virtTestCompareToFile(const char *strcontent,
+                      const char *filename)
+{
+    int ret = -1;
+    char *filecontent = NULL;
+    char *fixedcontent = NULL;
+
+    if (virtTestLoadFile(filename, &filecontent) < 0 && !virTestGetRegenerate())
+        goto failure;
+
+    if (filecontent &&
+        filecontent[strlen(filecontent) - 1] == '\n' &&
+        strcontent[strlen(strcontent) - 1] != '\n') {
+        if (virAsprintf(&fixedcontent, "%s\n", strcontent) < 0)
+            goto failure;
+    }
+
+    if (STRNEQ_NULLABLE(fixedcontent ? fixedcontent : strcontent,
+                        filecontent)) {
+        virtTestDifferenceFull(stderr,
+                               filecontent, filename,
+                               strcontent, NULL);
+        goto failure;
+    }
+
+    ret = 0;
+ failure:
+    VIR_FREE(fixedcontent);
+    VIR_FREE(filecontent);
+    return ret;
 }
 
 static void
@@ -664,21 +778,6 @@ virtTestLogContentAndReset(void)
 }
 
 
-static unsigned int
-virTestGetFlag(const char *name)
-{
-    char *flagStr;
-    unsigned int flag;
-
-    if ((flagStr = getenv(name)) == NULL)
-        return 0;
-
-    if (virStrToLong_ui(flagStr, NULL, 10, &flag) < 0)
-        return 0;
-
-    return flag;
-}
-
 unsigned int
 virTestGetDebug(void)
 {
@@ -701,6 +800,14 @@ virTestGetExpensive(void)
     if (testExpensive == -1)
         testExpensive = virTestGetFlag("VIR_TEST_EXPENSIVE");
     return testExpensive;
+}
+
+unsigned int
+virTestGetRegenerate(void)
+{
+    if (testRegenerate == -1)
+        testRegenerate = virTestGetFlag("VIR_TEST_REGENERATE_OUTPUT");
+    return testRegenerate;
 }
 
 int virtTestMain(int argc,
@@ -940,21 +1047,21 @@ virCapsPtr virTestGenericCapsInit(void)
                                    false, false)) == NULL)
         return NULL;
 
-    if ((guest = virCapabilitiesAddGuest(caps, "hvm", VIR_ARCH_I686,
+    if ((guest = virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM, VIR_ARCH_I686,
                                          "/usr/bin/acme-virt", NULL,
                                          0, NULL)) == NULL)
         goto error;
 
-    if (!virCapabilitiesAddGuestDomain(guest, "test", NULL, NULL, 0, NULL))
+    if (!virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_TEST, NULL, NULL, 0, NULL))
         goto error;
 
 
-    if ((guest = virCapabilitiesAddGuest(caps, "hvm", VIR_ARCH_X86_64,
+    if ((guest = virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM, VIR_ARCH_X86_64,
                                          "/usr/bin/acme-virt", NULL,
                                          0, NULL)) == NULL)
         goto error;
 
-    if (!virCapabilitiesAddGuestDomain(guest, "test", NULL, NULL, 0, NULL))
+    if (!virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_TEST, NULL, NULL, 0, NULL))
         goto error;
 
 
@@ -965,7 +1072,7 @@ virCapsPtr virTestGenericCapsInit(void)
         if (!caps_str)
             goto error;
 
-        fprintf(stderr, "Generic driver capabilities:\n%s", caps_str);
+        VIR_TEST_DEBUG("Generic driver capabilities:\n%s", caps_str);
 
         VIR_FREE(caps_str);
     }
@@ -985,6 +1092,45 @@ virDomainXMLOptionPtr virTestGenericDomainXMLConfInit(void)
     return virDomainXMLOptionNew(&virTestGenericDomainDefParserConfig,
                                  &virTestGenericPrivateDataCallbacks,
                                  NULL);
+}
+
+
+int
+testCompareDomXML2XMLFiles(virCapsPtr caps, virDomainXMLOptionPtr xmlopt,
+                           const char *infile, const char *outfile, bool live,
+                           testCompareDomXML2XMLPreFormatCallback cb,
+                           const void *opaque)
+{
+    char *actual = NULL;
+    int ret = -1;
+    virDomainDefPtr def = NULL;
+    unsigned int parse_flags = live ? 0 : VIR_DOMAIN_DEF_PARSE_INACTIVE;
+    unsigned int format_flags = VIR_DOMAIN_DEF_FORMAT_SECURE;
+    if (!live)
+        format_flags |= VIR_DOMAIN_DEF_FORMAT_INACTIVE;
+
+    if (!(def = virDomainDefParseFile(infile, caps, xmlopt, parse_flags)))
+        goto fail;
+
+    if (!virDomainDefCheckABIStability(def, def)) {
+        VIR_TEST_DEBUG("ABI stability check failed on %s", infile);
+        goto fail;
+    }
+
+    if (cb && cb(def, opaque) < 0)
+        goto fail;
+
+    if (!(actual = virDomainDefFormat(def, caps, format_flags)))
+        goto fail;
+
+    if (virtTestCompareToFile(actual, outfile) < 0)
+        goto fail;
+
+    ret = 0;
+ fail:
+    VIR_FREE(actual);
+    virDomainDefFree(def);
+    return ret;
 }
 
 

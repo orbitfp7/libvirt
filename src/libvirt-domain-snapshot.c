@@ -177,8 +177,9 @@ virDomainSnapshotGetConnect(virDomainSnapshotPtr snapshot)
  * the correct image format and metadata including backing store path
  * (this allows a management app to pre-create files with relative backing
  * file names, rather than the default of creating with absolute backing
- * file names). Note that setting incorrect metadata in the pre-created
- * image may lead to the VM being unable to start.
+ * file names). Note that only the file specified in the snapshot XML is
+ * inserted as a snapshot thus setting incorrect metadata in the pre-created
+ * image may lead to the VM being unable to start or other block jobs may fail.
  *
  * Be aware that although libvirt prefers to report errors up front with
  * no other effect, some hypervisors have certain types of failures where
@@ -220,30 +221,16 @@ virDomainSnapshotCreateXML(virDomainPtr domain,
     virCheckNonNullArgGoto(xmlDesc, error);
     virCheckReadOnlyGoto(conn->flags, error);
 
-    if ((flags & VIR_DOMAIN_SNAPSHOT_CREATE_CURRENT) &&
-        !(flags & VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE)) {
-        virReportInvalidArg(flags,
-                            _("use of 'current' flag in %s requires "
-                              "'redefine' flag"),
-                            __FUNCTION__);
-        goto error;
-    }
-    if ((flags & VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE) &&
-        (flags & VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA)) {
-        virReportInvalidArg(flags,
-                            _("'redefine' and 'no metadata' flags in %s are "
-                              "mutually exclusive"),
-                            __FUNCTION__);
-        goto error;
-    }
-    if ((flags & VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE) &&
-        (flags & VIR_DOMAIN_SNAPSHOT_CREATE_HALT)) {
-        virReportInvalidArg(flags,
-                            _("'redefine' and 'halt' flags in %s are mutually "
-                              "exclusive"),
-                            __FUNCTION__);
-        goto error;
-    }
+    VIR_REQUIRE_FLAG_GOTO(VIR_DOMAIN_SNAPSHOT_CREATE_CURRENT,
+                          VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE,
+                          error);
+
+    VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE,
+                             VIR_DOMAIN_SNAPSHOT_CREATE_NO_METADATA,
+                             error);
+    VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_SNAPSHOT_CREATE_REDEFINE,
+                             VIR_DOMAIN_SNAPSHOT_CREATE_HALT,
+                             error);
 
     if (conn->driver->domainSnapshotCreateXML) {
         virDomainSnapshotPtr ret;
@@ -1061,7 +1048,7 @@ virDomainSnapshotHasMetadata(virDomainSnapshotPtr snapshot,
  * new hypervisor instance rather than reusing the existing hypervisor
  * (since this would terminate all connections to the domain, such as
  * such as VNC or Spice graphics) - this condition arises from active
- * snapshots that are provably ABI incomaptible, as well as from
+ * snapshots that are provably ABI incompatible, as well as from
  * inactive snapshots with a @flags request to start the domain after
  * the revert.
  *
@@ -1082,14 +1069,9 @@ virDomainRevertToSnapshot(virDomainSnapshotPtr snapshot,
 
     virCheckReadOnlyGoto(conn->flags, error);
 
-    if ((flags & VIR_DOMAIN_SNAPSHOT_REVERT_RUNNING) &&
-        (flags & VIR_DOMAIN_SNAPSHOT_REVERT_PAUSED)) {
-        virReportInvalidArg(flags,
-                            _("running and paused flags in %s are mutually "
-                              "exclusive"),
-                            __FUNCTION__);
-        goto error;
-    }
+    VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_SNAPSHOT_REVERT_RUNNING,
+                             VIR_DOMAIN_SNAPSHOT_REVERT_PAUSED,
+                             error);
 
     if (conn->driver->domainRevertToSnapshot) {
         int ret = conn->driver->domainRevertToSnapshot(snapshot, flags);
@@ -1144,14 +1126,9 @@ virDomainSnapshotDelete(virDomainSnapshotPtr snapshot,
 
     virCheckReadOnlyGoto(conn->flags, error);
 
-    if ((flags & VIR_DOMAIN_SNAPSHOT_DELETE_CHILDREN) &&
-        (flags & VIR_DOMAIN_SNAPSHOT_DELETE_CHILDREN_ONLY)) {
-        virReportInvalidArg(flags,
-                            _("children and children_only flags in %s are "
-                              "mutually exclusive"),
-                            __FUNCTION__);
-        goto error;
-    }
+    VIR_EXCLUSIVE_FLAGS_GOTO(VIR_DOMAIN_SNAPSHOT_DELETE_CHILDREN,
+                             VIR_DOMAIN_SNAPSHOT_DELETE_CHILDREN_ONLY,
+                             error);
 
     if (conn->driver->domainSnapshotDelete) {
         int ret = conn->driver->domainSnapshotDelete(snapshot, flags);

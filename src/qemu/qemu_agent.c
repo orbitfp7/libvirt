@@ -42,6 +42,7 @@
 #include "virtime.h"
 #include "virobject.h"
 #include "virstring.h"
+#include "base64.h"
 
 #define VIR_FROM_THIS VIR_FROM_QEMU
 
@@ -92,6 +93,7 @@ struct _qemuAgent {
     int watch;
 
     bool connectPending;
+    bool running;
 
     virDomainObjPtr vm;
 
@@ -708,7 +710,7 @@ qemuAgentIO(int watch, int fd, int events, void *opaque)
 
 qemuAgentPtr
 qemuAgentOpen(virDomainObjPtr vm,
-              virDomainChrSourceDefPtr config,
+              const virDomainChrSourceDef *config,
               qemuAgentCallbacksPtr cb)
 {
     qemuAgentPtr mon;
@@ -772,6 +774,7 @@ qemuAgentOpen(virDomainObjPtr vm,
         goto cleanup;
     }
 
+    mon->running = true;
     VIR_DEBUG("New mon %p fd =%d watch=%d", mon, mon->fd, mon->watch);
 
     return mon;
@@ -785,6 +788,36 @@ qemuAgentOpen(virDomainObjPtr vm,
     mon->cb = NULL;
     qemuAgentClose(mon);
     return NULL;
+}
+
+
+static void
+qemuAgentNotifyCloseLocked(qemuAgentPtr mon)
+{
+    if (mon) {
+        mon->running = false;
+
+        /* If there is somebody waiting for a message
+         * wake him up. No message will arrive anyway. */
+        if (mon->msg && !mon->msg->finished) {
+            mon->msg->finished = 1;
+            virCondSignal(&mon->notify);
+        }
+    }
+}
+
+
+void
+qemuAgentNotifyClose(qemuAgentPtr mon)
+{
+    if (!mon)
+        return;
+
+    VIR_DEBUG("mon=%p", mon);
+
+    virObjectLock(mon);
+    qemuAgentNotifyCloseLocked(mon);
+    virObjectUnlock(mon);
 }
 
 
@@ -803,12 +836,7 @@ void qemuAgentClose(qemuAgentPtr mon)
         VIR_FORCE_CLOSE(mon->fd);
     }
 
-    /* If there is somebody waiting for a message
-     * wake him up. No message will arrive anyway. */
-    if (mon->msg && !mon->msg->finished) {
-        mon->msg->finished = 1;
-        virCondSignal(&mon->notify);
-    }
+    qemuAgentNotifyCloseLocked(mon);
     virObjectUnlock(mon);
 
     virObjectUnref(mon);
@@ -1087,6 +1115,12 @@ qemuAgentCommand(qemuAgentPtr mon,
 
     *reply = NULL;
 
+    if (!mon->running) {
+        virReportError(VIR_ERR_AGENT_UNRESPONSIVE, "%s",
+                       _("Guest agent disappeared while executing command"));
+        return -1;
+    }
+
     if (qemuAgentGuestSync(mon) < 0)
         return -1;
 
@@ -1112,8 +1146,12 @@ qemuAgentCommand(qemuAgentPtr mon,
             if (await_event && !needReply) {
                 VIR_DEBUG("Woken up by event %d", await_event);
             } else {
-                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                               _("Missing monitor reply object"));
+                if (mon->running)
+                    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                                   _("Missing monitor reply object"));
+                else
+                    virReportError(VIR_ERR_AGENT_UNRESPONSIVE, "%s",
+                                   _("Guest agent disappeared while executing command"));
                 ret = -1;
             }
         } else {
@@ -1136,7 +1174,6 @@ qemuAgentMakeCommand(const char *cmdname,
     virJSONValuePtr obj;
     virJSONValuePtr jargs = NULL;
     va_list args;
-    char *key;
 
     va_start(args, cmdname);
 
@@ -1146,76 +1183,8 @@ qemuAgentMakeCommand(const char *cmdname,
     if (virJSONValueObjectAppendString(obj, "execute", cmdname) < 0)
         goto error;
 
-    while ((key = va_arg(args, char *)) != NULL) {
-        int ret;
-        char type;
-
-        if (strlen(key) < 3) {
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("argument key '%s' is too short, missing type prefix"),
-                           key);
-            goto error;
-        }
-
-        /* Keys look like   s:name  the first letter is a type code */
-        type = key[0];
-        key += 2;
-
-        if (!jargs &&
-            !(jargs = virJSONValueNewObject()))
-            goto error;
-
-        /* This doesn't support maps/arrays.  This hasn't
-         * proved to be a problem..... yet :-)  */
-        switch (type) {
-        case 's': {
-            char *val = va_arg(args, char *);
-            ret = virJSONValueObjectAppendString(jargs, key, val);
-        }   break;
-        case 'i': {
-            int val = va_arg(args, int);
-            ret = virJSONValueObjectAppendNumberInt(jargs, key, val);
-        }   break;
-        case 'u': {
-            unsigned int val = va_arg(args, unsigned int);
-            ret = virJSONValueObjectAppendNumberUint(jargs, key, val);
-        }   break;
-        case 'I': {
-            long long val = va_arg(args, long long);
-            ret = virJSONValueObjectAppendNumberLong(jargs, key, val);
-        }   break;
-        case 'U': {
-            /* qemu silently truncates numbers larger than LLONG_MAX,
-             * so passing the full range of unsigned 64 bit integers
-             * is not safe here.  Pass them as signed 64 bit integers
-             * instead.
-             */
-            long long val = va_arg(args, long long);
-            ret = virJSONValueObjectAppendNumberLong(jargs, key, val);
-        }   break;
-        case 'd': {
-            double val = va_arg(args, double);
-            ret = virJSONValueObjectAppendNumberDouble(jargs, key, val);
-        }   break;
-        case 'b': {
-            int val = va_arg(args, int);
-            ret = virJSONValueObjectAppendBoolean(jargs, key, val);
-        }   break;
-        case 'n': {
-            ret = virJSONValueObjectAppendNull(jargs, key);
-        }   break;
-        case 'a': {
-            virJSONValuePtr val = va_arg(args, virJSONValuePtr);
-            ret = virJSONValueObjectAppend(jargs, key, val);
-        }   break;
-        default:
-            virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("unsupported data type '%c' for arg '%s'"), type, key - 2);
-            goto error;
-        }
-        if (ret < 0)
-            goto error;
-    }
+    if (virJSONValueObjectCreateVArgs(&jargs, args) < 0)
+        goto error;
 
     if (jargs &&
         virJSONValueObjectAppend(obj, "arguments", jargs) < 0)
@@ -1272,7 +1241,8 @@ void qemuAgentNotifyEvent(qemuAgentPtr mon,
         }
     } else {
         /* shouldn't happen but one never knows */
-        VIR_WARN("Received unexpected event %d", event);
+        VIR_WARN("Received unexpected event %d (expected %d)",
+                 event, mon->await_event);
     }
 }
 
@@ -1300,7 +1270,7 @@ int qemuAgentShutdown(qemuAgentPtr mon,
     else
         mon->await_event = QEMU_AGENT_EVENT_SHUTDOWN;
     ret = qemuAgentCommand(mon, cmd, &reply, false,
-                           VIR_DOMAIN_QEMU_AGENT_COMMAND_BLOCK);
+                           VIR_DOMAIN_QEMU_AGENT_COMMAND_SHUTDOWN);
 
     virJSONValueFree(cmd);
     virJSONValueFree(reply);
@@ -1492,7 +1462,7 @@ qemuAgentGetVCPUs(qemuAgentPtr mon,
     virJSONValuePtr cmd;
     virJSONValuePtr reply = NULL;
     virJSONValuePtr data = NULL;
-    int ndata;
+    ssize_t ndata;
 
     if (!(cmd = qemuAgentMakeCommand("guest-get-vcpus", NULL)))
         return -1;
@@ -1632,9 +1602,13 @@ qemuAgentUpdateCPUInfo(unsigned int nvcpus,
     size_t i;
     int nonline = 0;
     int nofflinable = 0;
+    ssize_t cpu0 = -1;
 
     /* count the active and offlinable cpus */
     for (i = 0; i < ncpuinfo; i++) {
+        if (cpuinfo[i].id == 0)
+            cpu0 = i;
+
         if (cpuinfo[i].online)
             nonline++;
 
@@ -1647,6 +1621,15 @@ qemuAgentUpdateCPUInfo(unsigned int nvcpus,
                            _("Invalid data provided by guest agent"));
             return -1;
         }
+    }
+
+    /* CPU0 was made offlinable in linux a while ago, but certain parts (suspend
+     * to ram) of the kernel still don't cope well with that. Make sure that if
+     * all remaining vCPUs are offlinable, vCPU0 will not be selected to be
+     * offlined automatically */
+    if (nofflinable == nonline && cpu0 >= 0 && cpuinfo[cpu0].online) {
+        cpuinfo[cpu0].offlinable = false;
+        nofflinable--;
     }
 
     /* the guest agent reported less cpus than requested */
@@ -1785,7 +1768,7 @@ qemuAgentGetFSInfo(qemuAgentPtr mon, virDomainFSInfoPtr **info,
 {
     size_t i, j, k;
     int ret = -1;
-    int ndata = 0, ndisk;
+    ssize_t ndata = 0, ndisk;
     char **alias;
     virJSONValuePtr cmd;
     virJSONValuePtr reply = NULL;
@@ -1828,7 +1811,7 @@ qemuAgentGetFSInfo(qemuAgentPtr mon, virDomainFSInfoPtr **info,
 
         if (!entry) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
-                           _("array element '%zd' of '%d' missing in "
+                           _("array element '%zd' of '%zd' missing in "
                              "guest-get-fsinfo return data"),
                            i, ndata);
             goto cleanup;
@@ -1882,13 +1865,14 @@ qemuAgentGetFSInfo(qemuAgentPtr mon, virDomainFSInfoPtr **info,
         for (j = 0; j < ndisk; j++) {
             virJSONValuePtr disk = virJSONValueArrayGet(entry, j);
             virJSONValuePtr pci;
-            int diskaddr[3], pciaddr[4], idx;
+            int diskaddr[3], pciaddr[4];
             const char *diskaddr_comp[] = {"bus", "target", "unit"};
             const char *pciaddr_comp[] = {"domain", "bus", "slot", "function"};
+            virDomainDiskDefPtr diskDef;
 
             if (!disk) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
-                               _("array element '%zd' of '%d' missing in "
+                               _("array element '%zd' of '%zd' missing in "
                                  "guest-get-fsinfo 'disk' data"),
                                j, ndisk);
                 goto cleanup;
@@ -1924,12 +1908,12 @@ qemuAgentGetFSInfo(qemuAgentPtr mon, virDomainFSInfoPtr **info,
             pci_address.bus = pciaddr[1];
             pci_address.slot = pciaddr[2];
             pci_address.function = pciaddr[3];
-            if ((idx = virDomainDiskIndexByAddress(
+            if (!(diskDef = virDomainDiskByAddress(
                      vmdef, &pci_address,
-                     diskaddr[0], diskaddr[1], diskaddr[2])) < 0)
+                     diskaddr[0], diskaddr[1], diskaddr[2])))
                 continue;
 
-            if (VIR_STRDUP(*alias, vmdef->disks[idx]->dst) < 0)
+            if (VIR_STRDUP(*alias, diskDef->dst) < 0)
                 goto cleanup;
 
             if (*alias) {
@@ -1951,5 +1935,239 @@ qemuAgentGetFSInfo(qemuAgentPtr mon, virDomainFSInfoPtr **info,
     }
     virJSONValueFree(cmd);
     virJSONValueFree(reply);
+    return ret;
+}
+
+/*
+ * qemuAgentGetInterfaces:
+ * @mon: Agent monitor
+ * @ifaces: pointer to an array of pointers pointing to interface objects
+ *
+ * Issue guest-network-get-interfaces to guest agent, which returns a
+ * list of interfaces of a running domain along with their IP and MAC
+ * addresses.
+ *
+ * Returns: number of interfaces on success, -1 on error.
+ */
+int
+qemuAgentGetInterfaces(qemuAgentPtr mon,
+                       virDomainInterfacePtr **ifaces)
+{
+    int ret = -1;
+    size_t i, j;
+    ssize_t size = -1;
+    virJSONValuePtr cmd = NULL;
+    virJSONValuePtr reply = NULL;
+    virJSONValuePtr ret_array = NULL;
+    size_t ifaces_count = 0;
+    size_t addrs_count = 0;
+    virDomainInterfacePtr *ifaces_ret = NULL;
+    virHashTablePtr ifaces_store = NULL;
+    char **ifname = NULL;
+
+    /* Hash table to handle the interface alias */
+    if (!(ifaces_store = virHashCreate(ifaces_count, NULL))) {
+        virHashFree(ifaces_store);
+        return -1;
+    }
+
+    if (!(cmd = qemuAgentMakeCommand("guest-network-get-interfaces", NULL)))
+        goto cleanup;
+
+    if (qemuAgentCommand(mon, cmd, &reply, false, VIR_DOMAIN_QEMU_AGENT_COMMAND_BLOCK) < 0 ||
+        qemuAgentCheckError(cmd, reply) < 0) {
+        goto cleanup;
+    }
+
+    if (!(ret_array = virJSONValueObjectGet(reply, "return"))) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("qemu agent didn't provide 'return' field"));
+        goto cleanup;
+    }
+
+    if ((size = virJSONValueArraySize(ret_array)) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("qemu agent didn't return an array of interfaces"));
+        goto cleanup;
+    }
+
+    for (i = 0; i < size; i++) {
+        virJSONValuePtr tmp_iface = virJSONValueArrayGet(ret_array, i);
+        virJSONValuePtr ip_addr_arr = NULL;
+        const char *hwaddr, *ifname_s, *name = NULL;
+        ssize_t ip_addr_arr_size;
+        virDomainInterfacePtr iface = NULL;
+
+        /* Shouldn't happen but doesn't hurt to check neither */
+        if (!tmp_iface) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("qemu agent reply missing interface entry in array"));
+            goto error;
+        }
+
+        /* interface name is required to be presented */
+        name = virJSONValueObjectGetString(tmp_iface, "name");
+        if (!name) {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("qemu agent didn't provide 'name' field"));
+            goto error;
+        }
+
+        /* Handle interface alias (<ifname>:<alias>) */
+        ifname = virStringSplit(name, ":", 2);
+        ifname_s = ifname[0];
+
+        iface = virHashLookup(ifaces_store, ifname_s);
+
+        /* If the hash table doesn't contain this iface, add it */
+        if (!iface) {
+            if (VIR_EXPAND_N(ifaces_ret, ifaces_count, 1) < 0)
+                goto error;
+
+            if (VIR_ALLOC(ifaces_ret[ifaces_count - 1]) < 0)
+                goto error;
+
+            if (virHashAddEntry(ifaces_store, ifname_s,
+                                ifaces_ret[ifaces_count - 1]) < 0)
+                goto error;
+
+            iface = ifaces_ret[ifaces_count - 1];
+            iface->naddrs = 0;
+
+            if (VIR_STRDUP(iface->name, ifname_s) < 0)
+                goto error;
+
+            hwaddr = virJSONValueObjectGetString(tmp_iface, "hardware-address");
+            if (VIR_STRDUP(iface->hwaddr, hwaddr) < 0)
+                goto error;
+        }
+
+        /* Has to be freed for each interface. */
+        virStringFreeList(ifname);
+
+        /* as well as IP address which - moreover -
+         * can be presented multiple times */
+        ip_addr_arr = virJSONValueObjectGet(tmp_iface, "ip-addresses");
+        if (!ip_addr_arr)
+            continue;
+
+        if ((ip_addr_arr_size = virJSONValueArraySize(ip_addr_arr)) < 0)
+            /* Mmm, empty 'ip-address'? */
+            goto error;
+
+        /* If current iface already exists, continue with the count */
+        addrs_count = iface->naddrs;
+
+        for (j = 0; j < ip_addr_arr_size; j++) {
+            const char *type, *addr;
+            virJSONValuePtr ip_addr_obj = virJSONValueArrayGet(ip_addr_arr, j);
+            virDomainIPAddressPtr ip_addr;
+
+            if (VIR_EXPAND_N(iface->addrs, addrs_count, 1)  < 0)
+                goto error;
+
+            ip_addr = &iface->addrs[addrs_count - 1];
+
+            /* Shouldn't happen but doesn't hurt to check neither */
+            if (!ip_addr_obj) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("qemu agent reply missing IP addr in array"));
+                goto error;
+            }
+
+            type = virJSONValueObjectGetString(ip_addr_obj, "ip-address-type");
+            if (!type) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("qemu agent didn't provide 'ip-address-type'"
+                                 " field for interface '%s'"), name);
+                goto error;
+            } else if (STREQ(type, "ipv4")) {
+                ip_addr->type = VIR_IP_ADDR_TYPE_IPV4;
+            } else if (STREQ(type, "ipv6")) {
+                ip_addr->type = VIR_IP_ADDR_TYPE_IPV6;
+            } else {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("unknown ip address type '%s'"),
+                               type);
+                goto error;
+            }
+
+            addr = virJSONValueObjectGetString(ip_addr_obj, "ip-address");
+            if (!addr) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("qemu agent didn't provide 'ip-address'"
+                                 " field for interface '%s'"), name);
+                goto error;
+            }
+            if (VIR_STRDUP(ip_addr->addr, addr) < 0)
+                goto error;
+
+            if (virJSONValueObjectGetNumberUint(ip_addr_obj, "prefix",
+                                                &ip_addr->prefix) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("malformed 'prefix' field"));
+                goto error;
+            }
+        }
+
+        iface->naddrs = addrs_count;
+    }
+
+    *ifaces = ifaces_ret;
+    ifaces_ret = NULL;
+    ret = ifaces_count;
+
+ cleanup:
+    virJSONValueFree(cmd);
+    virJSONValueFree(reply);
+    virHashFree(ifaces_store);
+    return ret;
+
+ error:
+    if (ifaces_ret) {
+        for (i = 0; i < ifaces_count; i++)
+            virDomainInterfaceFree(ifaces_ret[i]);
+    }
+    VIR_FREE(ifaces_ret);
+    virStringFreeList(ifname);
+
+    goto cleanup;
+}
+
+
+int
+qemuAgentSetUserPassword(qemuAgentPtr mon,
+                         const char *user,
+                         const char *password,
+                         bool crypted)
+{
+    int ret = -1;
+    virJSONValuePtr cmd = NULL;
+    virJSONValuePtr reply = NULL;
+    char *password64 = NULL;
+
+    base64_encode_alloc(password, strlen(password), &password64);
+    if (!password64) {
+        virReportOOMError();
+        goto cleanup;
+    }
+
+    if (!(cmd = qemuAgentMakeCommand("guest-set-user-password",
+                                     "b:crypted", crypted,
+                                     "s:username", user,
+                                     "s:password", password64,
+                                     NULL)))
+        goto cleanup;
+
+    if (qemuAgentCommand(mon, cmd, &reply, true,
+                         VIR_DOMAIN_QEMU_AGENT_COMMAND_BLOCK) < 0)
+        goto cleanup;
+
+    ret = 0;
+
+ cleanup:
+    virJSONValueFree(cmd);
+    virJSONValueFree(reply);
+    VIR_FREE(password64);
     return ret;
 }

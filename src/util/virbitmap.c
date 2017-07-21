@@ -71,7 +71,7 @@ virBitmapNewQuiet(size_t size)
     if (SIZE_MAX - VIR_BITMAP_BITS_PER_UNIT < size || size == 0)
         return NULL;
 
-    sz = (size + VIR_BITMAP_BITS_PER_UNIT - 1) / VIR_BITMAP_BITS_PER_UNIT;
+    sz = VIR_DIV_UP(size, VIR_BITMAP_BITS_PER_UNIT);
 
     if (VIR_ALLOC_QUIET(bitmap) < 0)
         return NULL;
@@ -176,6 +176,24 @@ int virBitmapClearBit(virBitmapPtr bitmap, size_t b)
 static bool virBitmapIsSet(virBitmapPtr bitmap, size_t b)
 {
     return !!(bitmap->map[VIR_BITMAP_UNIT_OFFSET(b)] & VIR_BITMAP_BIT(b));
+}
+
+/**
+ * virBitmapIsBitSet:
+ * @bitmap: Pointer to bitmap
+ * @b: bit position to get
+ *
+ * Get setting of bit position @b in @bitmap.
+ *
+ * If @b is in the range of @bitmap, returns the value of the bit.
+ * Otherwise false is returned.
+ */
+bool virBitmapIsBitSet(virBitmapPtr bitmap, size_t b)
+{
+    if (bitmap->max_bit <= b)
+        return false;
+
+    return virBitmapIsSet(bitmap, b);
 }
 
 /**
@@ -398,9 +416,6 @@ virBitmapParse(const char *str,
         }
     }
 
-    if (virBitmapIsAllClear(*bitmap))
-        goto error;
-
     return virBitmapCountBits(*bitmap);
 
  error:
@@ -477,24 +492,46 @@ virBitmapPtr virBitmapNewData(void *data, int len)
  *
  * Convert a bitmap to a chunk of data containing bits information.
  * Data consists of sequential bytes, with lower bytes containing
- * lower bits.
+ * lower bits. This function allocates @data.
  *
  * Returns 0 on success, -1 otherwise.
  */
 int virBitmapToData(virBitmapPtr bitmap, unsigned char **data, int *dataLen)
 {
-    int len;
-    unsigned long *l;
-    size_t i, j;
-    unsigned char *bytes;
+    ssize_t len;
 
-    len = (bitmap->max_bit + CHAR_BIT - 1) / CHAR_BIT;
+    if ((len = virBitmapLastSetBit(bitmap)) < 0)
+        len = 1;
+    else
+        len = (len + CHAR_BIT) / CHAR_BIT;
 
     if (VIR_ALLOC_N(*data, len) < 0)
         return -1;
 
-    bytes = *data;
     *dataLen = len;
+
+    virBitmapToDataBuf(bitmap, *data, *dataLen);
+
+    return 0;
+}
+
+/**
+ * virBitmapToDataBuf:
+ * @bytes: pointer to memory to fill
+ * @len: len of @bytes in byte
+ *
+ * Convert a bitmap to a chunk of data containing bits information.
+ * Data consists of sequential bytes, with lower bytes containing
+ * lower bits.
+ */
+void virBitmapToDataBuf(virBitmapPtr bitmap,
+                        unsigned char *bytes,
+                        size_t len)
+{
+    unsigned long *l;
+    size_t i, j;
+
+    memset(bytes, 0, len);
 
     /* htole64 is not provided by gnulib, so we do the conversion by hand */
     l = bitmap->map;
@@ -505,8 +542,6 @@ int virBitmapToData(virBitmapPtr bitmap, unsigned char **data, int *dataLen)
         }
         bytes[i] = *l >> (j * CHAR_BIT);
     }
-
-    return 0;
 }
 
 /**
@@ -823,4 +858,25 @@ virBitmapOverlaps(virBitmapPtr b1,
     }
 
     return false;
+}
+
+/**
+ * virBitmapSubtract:
+ * @a: minuend/result
+ * @b: subtrahend
+ *
+ * Performs bitwise subtraction: a = a - b
+ */
+void
+virBitmapSubtract(virBitmapPtr a,
+                  virBitmapPtr b)
+{
+    size_t i;
+    size_t max = a->map_len;
+
+    if (max > b->map_len)
+        max = b->map_len;
+
+    for (i = 0; i < max; i++)
+        a->map[i] &= ~b->map[i];
 }

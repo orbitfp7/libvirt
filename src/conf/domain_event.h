@@ -185,6 +185,12 @@ virObjectEventPtr
 virDomainEventDeviceRemovedNewFromDom(virDomainPtr dom,
                                       const char *devAlias);
 virObjectEventPtr
+virDomainEventDeviceAddedNewFromObj(virDomainObjPtr obj,
+                                    const char *devAlias);
+virObjectEventPtr
+virDomainEventDeviceAddedNewFromDom(virDomainPtr dom,
+                                    const char *devAlias);
+virObjectEventPtr
 virDomainEventTunableNewFromObj(virDomainObjPtr obj,
                                 virTypedParameterPtr params,
                                 int nparams);
@@ -202,6 +208,14 @@ virObjectEventPtr
 virDomainEventAgentLifecycleNewFromDom(virDomainPtr dom,
                                        int state,
                                        int reason);
+
+virObjectEventPtr
+virDomainEventMigrationIterationNewFromObj(virDomainObjPtr obj,
+                                           int iteration);
+
+virObjectEventPtr
+virDomainEventMigrationIterationNewFromDom(virDomainPtr dom,
+                                           int iteration);
 
 int
 virDomainEventStateRegister(virConnectPtr conn,

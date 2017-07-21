@@ -4,7 +4,7 @@
          xmlns:v="http://netcf.org/xml/version/1.0"
          datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes">
   <!-- Versions for this schema are simple integers that are incremented
-       everytime a changed (but backwards compatible) version
+       every time a changed (but backwards compatible) version
        is released. The current version is indicated with the v:serial
        attribute on the start element.
   -->
@@ -323,22 +323,22 @@
         <value>ipv4</value>
       </attribute>
       <interleave>
-        <choice>
+        <optional>
           <ref name="dhcp-element"/>
-          <group>
-            <element name="ip">
-              <attribute name="address"><ref name="ipv4Addr"/></attribute>
-              <optional>
-                <attribute name="prefix"><ref name="ipv4Prefix"/></attribute>
-              </optional>
-            </element>
+        </optional>
+        <zeroOrMore>
+          <element name="ip">
+            <attribute name="address"><ref name="ipv4Addr"/></attribute>
             <optional>
-              <element name="route">
-                <attribute name="gateway"><ref name="ipv4Addr"/></attribute>
-              </element>
+              <attribute name="prefix"><ref name="ipv4Prefix"/></attribute>
             </optional>
-          </group>
-        </choice>
+          </element>
+        </zeroOrMore>
+        <optional>
+          <element name="route">
+            <attribute name="gateway"><ref name="ipv4Addr"/></attribute>
+          </element>
+        </optional>
       </interleave>
     </element>
   </define>

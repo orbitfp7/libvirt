@@ -1,6 +1,6 @@
 ## Process this file with automake to produce Makefile.in
 
-## Copyright (C) 2005-2014 Red Hat, Inc.
+## Copyright (C) 2005-2016 Red Hat, Inc.
 ##
 ## This library is free software; you can redistribute it and/or
 ## modify it under the terms of the GNU Lesser General Public
@@ -15,8 +15,6 @@
 ## You should have received a copy of the GNU Lesser General Public
 ## License along with this library.  If not, see
 ## <http://www.gnu.org/licenses/>.
-
-SUBDIRS= schemas
 
 PERL = perl
 
@@ -128,8 +126,15 @@ lxc_xml = \
   libvirt-lxc-api.xml \
   libvirt-lxc-refs.xml
 
+admin_xml = \
+  libvirt-admin-api.xml \
+  libvirt-admin-refs.xml
+
 apidir = $(pkgdatadir)/api
-api_DATA = libvirt-api.xml libvirt-qemu-api.xml libvirt-lxc-api.xml
+api_DATA = \
+       libvirt-api.xml \
+       libvirt-qemu-api.xml \
+       libvirt-lxc-api.xml
 
 fig = \
   libvirt-net-logical.fig \
@@ -143,6 +148,9 @@ fig = \
   migration-tunnel.fig \
   migration-unmanaged-direct.fig
 
+schemadir = $(pkgdatadir)/schemas
+schema_DATA = $(wildcard $(srcdir)/schemas/*.rng)
+
 EXTRA_DIST=					\
   apibuild.py genaclperms.pl \
   site.xsl newapi.xsl news.xsl page.xsl \
@@ -153,9 +161,10 @@ EXTRA_DIST=					\
   $(patches) $(dot_php_in) $(dot_php_code_in) $(dot_php)\
   $(internals_html_in) $(internals_html) \
   sitemap.html.in aclperms.htmlinc \
-  todo.pl hvsupport.pl todo.cfg-example
+  todo.pl hvsupport.pl todo.cfg-example \
+  $(schema_DATA)
 
-acl.html:: $(srcdir)/aclperms.htmlinc
+acl_generated = aclperms.htmlinc
 
 $(srcdir)/aclperms.htmlinc: $(top_srcdir)/src/access/viraccessperm.h \
         $(srcdir)/genaclperms.pl Makefile.am
@@ -174,6 +183,7 @@ all-am: web
 api: $(srcdir)/libvirt-api.xml $(srcdir)/libvirt-refs.xml
 qemu_api: $(srcdir)/libvirt-qemu-api.xml $(srcdir)/libvirt-qemu-refs.xml
 lxc_api: $(srcdir)/libvirt-lxc-api.xml $(srcdir)/libvirt-lxc-refs.xml
+admin_api: $(srcdir)/libvirt-admin-api.xml $(srcdir)/libvirt-admin-refs.xml
 
 web: $(dot_html) $(internals_html) html/index.html devhelp/index.html \
   $(dot_php)
@@ -196,13 +206,13 @@ todo:
 	rm -f todo.html.in
 	$(MAKE) todo.html
 
-hvsupport.html:: $(srcdir)/hvsupport.html.in
+hvsupport.html: $(srcdir)/hvsupport.html.in
 
 $(srcdir)/hvsupport.html.in: $(srcdir)/hvsupport.pl $(api_DATA) \
-		$(srcdir)/../src/libvirt_public.syms \
-	$(srcdir)/../src/libvirt_qemu.syms $(srcdir)/../src/libvirt_lxc.syms \
-	$(srcdir)/../src/driver.h
-	$(AM_V_GEN)$(PERL) $(srcdir)/hvsupport.pl $(srcdir)/../src > $@ \
+		$(top_srcdir)/src/libvirt_public.syms \
+	$(top_srcdir)/src/libvirt_qemu.syms $(top_srcdir)/src/libvirt_lxc.syms \
+	$(top_srcdir)/src/driver.h
+	$(AM_V_GEN)$(PERL) $(srcdir)/hvsupport.pl $(top_srcdir)/src > $@ \
 		|| { rm $@ && exit 1; }
 
 .PHONY: todo
@@ -210,21 +220,21 @@ $(srcdir)/hvsupport.html.in: $(srcdir)/hvsupport.pl $(api_DATA) \
 %.png: %.fig
 	convert -rotate 90 $< $@
 
-internals/%.html.tmp: internals/%.html.in subsite.xsl page.xsl sitemap.html.in
-	@if [ -x $(XSLTPROC) ] ; then \
-	  echo "Generating $@"; \
-	  $(MKDIR_P) internals; \
-	  name=`echo $@ | sed -e 's/.tmp//'`; \
-	  $(XSLTPROC) --stringparam pagename $$name --nonet \
-	    $(top_srcdir)/docs/subsite.xsl $< > $@ \
-	    || { rm $@ && exit 1; }; fi
-
-%.html.tmp: %.html.in site.xsl page.xsl sitemap.html.in
+%.html.tmp: %.html.in site.xsl subsite.xsl page.xsl \
+		sitemap.html.in $(acl_generated)
 	@if [ -x $(XSLTPROC) ] ; then \
 	  echo "Generating $@"; \
 	  name=`echo $@ | sed -e 's/.tmp//'`; \
+	  dir=`dirname $@` ; \
+	  if test "$$dir" = "."; \
+	  then \
+	    style=site.xsl; \
+	  else \
+	    $(MKDIR_P) $$dir; \
+	    style=subsite.xsl; \
+	  fi; \
 	  $(XSLTPROC) --stringparam pagename $$name --nonet \
-	    $(top_srcdir)/docs/site.xsl $< > $@ \
+	    $(top_srcdir)/docs/$$style $< > $@ \
 	    || { rm $@ && exit 1; }; fi
 
 %.html: %.html.tmp
@@ -274,6 +284,7 @@ $(addprefix $(srcdir)/,$(devhelphtml)): $(srcdir)/libvirt-api.xml $(devhelpxsl)
 python_generated_files = \
 		$(srcdir)/html/libvirt-libvirt-lxc.html \
 		$(srcdir)/html/libvirt-libvirt-qemu.html \
+		$(srcdir)/html/libvirt-libvirt-admin.html \
 		$(srcdir)/html/libvirt-virterror.html \
 		$(srcdir)/libvirt-api.xml \
 		$(srcdir)/libvirt-refs.xml \
@@ -281,6 +292,8 @@ python_generated_files = \
 		$(srcdir)/libvirt-lxc-refs.xml \
 		$(srcdir)/libvirt-qemu-api.xml \
 		$(srcdir)/libvirt-qemu-refs.xml \
+		$(srcdir)/libvirt-admin-api.xml \
+		$(srcdir)/libvirt-admin-refs.xml \
 		$(NULL)
 
 APIBUILD=$(srcdir)/apibuild.py
@@ -290,27 +303,30 @@ EXTRA_DIST += $(APIBUILD_STAMP)
 $(python_generated_files): $(APIBUILD_STAMP)
 
 $(APIBUILD_STAMP): $(srcdir)/apibuild.py \
-		$(srcdir)/../include/libvirt/libvirt.h.in \
-		$(srcdir)/../include/libvirt/libvirt-domain-snapshot.h \
-		$(srcdir)/../include/libvirt/libvirt-domain.h \
-		$(srcdir)/../include/libvirt/libvirt-event.h \
-		$(srcdir)/../include/libvirt/libvirt-host.h \
-		$(srcdir)/../include/libvirt/libvirt-interface.h \
-		$(srcdir)/../include/libvirt/libvirt-network.h \
-		$(srcdir)/../include/libvirt/libvirt-nodedev.h \
-		$(srcdir)/../include/libvirt/libvirt-nwfilter.h \
-		$(srcdir)/../include/libvirt/libvirt-secret.h \
-		$(srcdir)/../include/libvirt/libvirt-storage.h \
-		$(srcdir)/../include/libvirt/libvirt-stream.h \
-		$(srcdir)/../include/libvirt/libvirt-lxc.h \
-		$(srcdir)/../include/libvirt/libvirt-qemu.h \
-		$(srcdir)/../include/libvirt/virterror.h \
-		$(srcdir)/../src/libvirt.c \
-		$(srcdir)/../src/libvirt-lxc.c \
-		$(srcdir)/../src/libvirt-qemu.c \
-		$(srcdir)/../src/util/virerror.c \
-		$(srcdir)/../src/util/virevent.c \
-		$(srcdir)/../src/util/virtypedparam.c
+		$(top_srcdir)/include/libvirt/libvirt.h \
+		$(top_srcdir)/include/libvirt/libvirt-common.h.in \
+		$(top_srcdir)/include/libvirt/libvirt-domain-snapshot.h \
+		$(top_srcdir)/include/libvirt/libvirt-domain.h \
+		$(top_srcdir)/include/libvirt/libvirt-event.h \
+		$(top_srcdir)/include/libvirt/libvirt-host.h \
+		$(top_srcdir)/include/libvirt/libvirt-interface.h \
+		$(top_srcdir)/include/libvirt/libvirt-network.h \
+		$(top_srcdir)/include/libvirt/libvirt-nodedev.h \
+		$(top_srcdir)/include/libvirt/libvirt-nwfilter.h \
+		$(top_srcdir)/include/libvirt/libvirt-secret.h \
+		$(top_srcdir)/include/libvirt/libvirt-storage.h \
+		$(top_srcdir)/include/libvirt/libvirt-stream.h \
+		$(top_srcdir)/include/libvirt/libvirt-lxc.h \
+		$(top_srcdir)/include/libvirt/libvirt-qemu.h \
+		$(top_srcdir)/include/libvirt/libvirt-admin.h \
+		$(top_srcdir)/include/libvirt/virterror.h \
+		$(top_srcdir)/src/libvirt.c \
+		$(top_srcdir)/src/libvirt-lxc.c \
+		$(top_srcdir)/src/libvirt-qemu.c \
+		$(top_srcdir)/src/libvirt-admin.c \
+		$(top_srcdir)/src/util/virerror.c \
+		$(top_srcdir)/src/util/virevent.c \
+		$(top_srcdir)/src/util/virtypedparam.c
 	$(AM_V_GEN)srcdir=$(srcdir) $(PYTHON) $(APIBUILD)
 	touch $@
 
@@ -326,9 +342,10 @@ maintainer-clean-local: clean-local
 		todo.html.in
 	rm -rf $(srcdir)/libvirt-qemu-api.xml $(srcdir)/libvirt-qemu-refs.xml
 	rm -rf $(srcdir)/libvirt-lxc-api.xml $(srcdir)/libvirt-lxc-refs.xml
+	rm -rf $(srcdir)/libvirt-admin-api.xml $(srcdir)/libvirt-admin-refs.xml
 	rm -rf $(APIBUILD_STAMP)
 
-rebuild: api qemu_api lxc_api all
+rebuild: api qemu_api lxc_api admin_api all
 
 install-data-local:
 	$(mkinstalldirs) $(DESTDIR)$(HTML_DIR)

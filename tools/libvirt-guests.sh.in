@@ -39,6 +39,7 @@ START_DELAY=0
 BYPASS_CACHE=0
 CONNECT_RETRIES=10
 RETRIES_SLEEP=1
+SYNC_TIME=0
 
 test -f "$sysconfdir"/sysconfig/libvirt-guests &&
     . "$sysconfdir"/sysconfig/libvirt-guests
@@ -171,7 +172,9 @@ start() {
 
     isfirst=true
     bypass=
+    sync_time=false
     test "x$BYPASS_CACHE" = x0 || bypass=--bypass-cache
+    test "x$SYNC_TIME" = x0 || sync_time=true
     while read uri list; do
         configured=false
         set -f
@@ -206,6 +209,9 @@ start() {
                     retval run_virsh "$uri" start $bypass "$name" \
                         >/dev/null && \
                     gettext "done"; echo
+                    if "$sync_time"; then
+                        run_virsh "$uri" domtime --sync "$name" >/dev/null
+                    fi
                 fi
             fi
         done

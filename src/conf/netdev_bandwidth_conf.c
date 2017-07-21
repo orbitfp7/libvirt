@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2014 Red Hat, Inc.
+ * Copyright (C) 2009-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -50,7 +50,7 @@ virNetDevBandwidthParseRate(xmlNodePtr node, virNetDevBandwidthRatePtr rate)
     floor = virXMLPropString(node, "floor");
 
     if (average) {
-        if (virStrToLong_ull(average, NULL, 10, &rate->average) < 0) {
+        if (virStrToLong_ullp(average, NULL, 10, &rate->average) < 0) {
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("could not convert bandwidth average value '%s'"),
                            average);
@@ -68,21 +68,21 @@ virNetDevBandwidthParseRate(xmlNodePtr node, virNetDevBandwidthRatePtr rate)
         goto cleanup;
     }
 
-    if (peak && virStrToLong_ull(peak, NULL, 10, &rate->peak) < 0) {
+    if (peak && virStrToLong_ullp(peak, NULL, 10, &rate->peak) < 0) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                        _("could not convert bandwidth peak value '%s'"),
                        peak);
         goto cleanup;
     }
 
-    if (burst && virStrToLong_ull(burst, NULL, 10, &rate->burst) < 0) {
+    if (burst && virStrToLong_ullp(burst, NULL, 10, &rate->burst) < 0) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                        _("could not convert bandwidth burst value '%s'"),
                        burst);
         goto cleanup;
     }
 
-    if (floor && virStrToLong_ull(floor, NULL, 10, &rate->floor) < 0) {
+    if (floor && virStrToLong_ullp(floor, NULL, 10, &rate->floor) < 0) {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                        _("could not convert bandwidth floor value '%s'"),
                        floor);
@@ -285,7 +285,8 @@ virDomainClearNetBandwidth(virDomainObjPtr vm)
 
     for (i = 0; i < vm->def->nnets; i++) {
         type = virDomainNetGetActualType(vm->def->nets[i]);
-        if (virNetDevSupportBandwidth(type))
+        if (virDomainNetGetActualBandwidth(vm->def->nets[i]) &&
+            virNetDevSupportBandwidth(type))
             virNetDevBandwidthClear(vm->def->nets[i]->ifname);
     }
 }

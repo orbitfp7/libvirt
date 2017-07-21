@@ -35,28 +35,28 @@ testCapsInit(void)
 
     /* i686 guest */
     guest =
-      virCapabilitiesAddGuest(caps, "hvm",
+      virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM,
                               VIR_ARCH_I686,
                               NULL, NULL, 0, NULL);
 
     if (guest == NULL)
         goto failure;
 
-    if (virCapabilitiesAddGuestDomain(guest, "vmware", NULL, NULL, 0,
+    if (virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_VMWARE, NULL, NULL, 0,
                                       NULL) == NULL) {
         goto failure;
     }
 
     /* x86_64 guest */
     guest =
-      virCapabilitiesAddGuest(caps, "hvm",
+      virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM,
                               VIR_ARCH_X86_64,
                               NULL, NULL, 0, NULL);
 
     if (guest == NULL)
         goto failure;
 
-    if (virCapabilitiesAddGuestDomain(guest, "vmware", NULL, NULL, 0,
+    if (virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_VMWARE, NULL, NULL, 0,
                                       NULL) == NULL) {
         goto failure;
     }
@@ -73,20 +73,11 @@ static int
 testCompareFiles(const char *xml, const char *vmx, int virtualHW_version)
 {
     int result = -1;
-    char *xmlData = NULL;
-    char *vmxData = NULL;
     char *formatted = NULL;
     virDomainDefPtr def = NULL;
 
-    if (virtTestLoadFile(xml, &xmlData) < 0)
-        goto failure;
-
-    if (virtTestLoadFile(vmx, &vmxData) < 0)
-        goto failure;
-
-    def = virDomainDefParseString(xmlData, caps, xmlopt,
-                                  1 << VIR_DOMAIN_VIRT_VMWARE,
-                                  VIR_DOMAIN_DEF_PARSE_INACTIVE);
+    def = virDomainDefParseFile(xml, caps, xmlopt,
+                                VIR_DOMAIN_DEF_PARSE_INACTIVE);
 
     if (def == NULL)
         goto failure;
@@ -97,20 +88,15 @@ testCompareFiles(const char *xml, const char *vmx, int virtualHW_version)
     }
 
     formatted = virVMXFormatConfig(&ctx, xmlopt, def, virtualHW_version);
-
     if (formatted == NULL)
         goto failure;
 
-    if (STRNEQ(vmxData, formatted)) {
-        virtTestDifference(stderr, vmxData, formatted);
+    if (virtTestCompareToFile(formatted, vmx) < 0)
         goto failure;
-    }
 
     result = 0;
 
  failure:
-    VIR_FREE(xmlData);
-    VIR_FREE(vmxData);
     VIR_FREE(formatted);
     virDomainDefFree(def);
 
@@ -235,6 +221,7 @@ mymain(void)
     ctx.parseFileName = NULL;
     ctx.formatFileName = testFormatVMXFileName;
     ctx.autodetectSCSIControllerModel = testAutodetectSCSIControllerModel;
+    ctx.datacenterPath = NULL;
 
     DO_TEST("minimal", "minimal", 4);
     DO_TEST("minimal-64bit", "minimal-64bit", 4);
@@ -248,10 +235,13 @@ mymain(void)
     DO_TEST("harddisk-ide-file", "harddisk-ide-file", 4);
 
     DO_TEST("cdrom-scsi-file", "cdrom-scsi-file", 4);
+    DO_TEST("cdrom-scsi-empty", "cdrom-scsi-empty", 4);
     DO_TEST("cdrom-scsi-device", "cdrom-scsi-device", 4);
     DO_TEST("cdrom-scsi-raw-device", "cdrom-scsi-raw-device", 4);
     DO_TEST("cdrom-scsi-raw-auto-detect", "cdrom-scsi-raw-auto-detect", 4);
+    DO_TEST("cdrom-scsi-passthru", "cdrom-scsi-passthru", 4);
     DO_TEST("cdrom-ide-file", "cdrom-ide-file", 4);
+    DO_TEST("cdrom-ide-empty", "cdrom-ide-empty", 4);
     DO_TEST("cdrom-ide-device", "cdrom-ide-device", 4);
     DO_TEST("cdrom-ide-raw-device", "cdrom-ide-raw-device", 4);
     DO_TEST("cdrom-ide-raw-auto-detect", "cdrom-ide-raw-auto-detect", 4);
@@ -288,6 +278,7 @@ mymain(void)
     DO_TEST("esx-in-the-wild-4", "esx-in-the-wild-4", 4);
     DO_TEST("esx-in-the-wild-5", "esx-in-the-wild-5", 4);
     DO_TEST("esx-in-the-wild-6", "esx-in-the-wild-6", 4);
+    DO_TEST("esx-in-the-wild-7", "esx-in-the-wild-7", 4);
 
     DO_TEST("gsx-in-the-wild-1", "gsx-in-the-wild-1", 4);
     DO_TEST("gsx-in-the-wild-2", "gsx-in-the-wild-2", 4);
@@ -304,6 +295,8 @@ mymain(void)
     DO_TEST("smbios", "smbios", 4);
 
     DO_TEST("svga", "svga", 4);
+
+    DO_TEST("datacenterpath", "datacenterpath", 4);
 
     virObjectUnref(caps);
     virObjectUnref(xmlopt);

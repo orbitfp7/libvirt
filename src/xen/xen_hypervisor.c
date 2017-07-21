@@ -309,7 +309,7 @@ union xen_getdomaininfolist {
     struct xen_v2d6_getdomaininfo *v2d6;
     struct xen_v2d7_getdomaininfo *v2d7;
     struct xen_v2d8_getdomaininfo *v2d8;
-    struct xen_v2d8_getdomaininfo *v2d9;
+    struct xen_v2d9_getdomaininfo *v2d9;
 };
 typedef union xen_getdomaininfolist xen_getdomaininfolist;
 
@@ -2142,7 +2142,7 @@ xenHypervisorBuildCapabilities(virConnectPtr conn, virArch hostarch,
             goto no_memory;
 
         if ((guest = virCapabilitiesAddGuest(caps,
-                                             guest_archs[i].hvm ? "hvm" : "xen",
+                                             guest_archs[i].hvm ? VIR_DOMAIN_OSTYPE_HVM : VIR_DOMAIN_OSTYPE_XEN,
                                              guest_archs[i].arch,
                                              (hostarch == VIR_ARCH_X86_64 ?
                                               "/usr/lib64/xen/bin/qemu-dm" :
@@ -2158,7 +2158,7 @@ xenHypervisorBuildCapabilities(virConnectPtr conn, virArch hostarch,
         machines = NULL;
 
         if (virCapabilitiesAddGuestDomain(guest,
-                                          "xen",
+                                          VIR_DOMAIN_VIRT_XEN,
                                           NULL,
                                           NULL,
                                           0,
@@ -2634,9 +2634,9 @@ xenHypervisorLookupDomainByID(virConnectPtr conn, int id)
     if (!name)
         return NULL;
 
-    ret = virDomainDefNew(name,
-                          XEN_GETDOMAININFO_UUID(dominfo),
-                          id);
+    ret = virDomainDefNewFull(name,
+                              XEN_GETDOMAININFO_UUID(dominfo),
+                              id);
     VIR_FREE(name);
     return ret;
 }
@@ -2699,7 +2699,7 @@ xenHypervisorLookupDomainByUUID(virConnectPtr conn, const unsigned char *uuid)
     if (!name)
         return NULL;
 
-    ret = virDomainDefNew(name, uuid, id);
+    ret = virDomainDefNewFull(name, uuid, id);
     if (ret)
         ret->id = id;
     VIR_FREE(name);

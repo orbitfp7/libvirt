@@ -1,7 +1,7 @@
 /*
  * virfirewall.c: integration with firewalls
  *
- * Copyright (C) 2013, 2014 Red Hat, Inc.
+ * Copyright (C) 2013-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -822,8 +822,7 @@ virFirewallApplyRuleFirewallD(virFirewallRulePtr rule,
 
  cleanup:
     virResetError(&error);
-    if (reply)
-        dbus_message_unref(reply);
+    virDBusMessageUnref(reply);
     return ret;
 }
 
@@ -932,6 +931,14 @@ virFirewallApply(virFirewallPtr firewall)
 
     virMutexLock(&ruleLock);
 
+    if (currentBackend == VIR_FIREWALL_BACKEND_AUTOMATIC) {
+        /* a specific backend should have been set when the firewall
+         * object was created. If not, it means none was found.
+         */
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed to initialize a valid firewall backend"));
+        goto cleanup;
+    }
     if (!firewall || firewall->err == ENOMEM) {
         virReportOOMError();
         goto cleanup;
@@ -945,7 +952,7 @@ virFirewallApply(virFirewallPtr firewall)
     VIR_DEBUG("Applying groups for %p", firewall);
     for (i = 0; i < firewall->ngroups; i++) {
         if (virFirewallApplyGroup(firewall, i) < 0) {
-            VIR_DEBUG("Rolling back groups upto %zu for %p", i, firewall);
+            VIR_DEBUG("Rolling back groups up to %zu for %p", i, firewall);
             size_t first = i;
             virErrorPtr saved_error = virSaveLastError();
 

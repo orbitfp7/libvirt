@@ -44,10 +44,12 @@ struct _qemuAgentCallbacks {
 
 
 qemuAgentPtr qemuAgentOpen(virDomainObjPtr vm,
-                           virDomainChrSourceDefPtr config,
+                           const virDomainChrSourceDef *config,
                            qemuAgentCallbacksPtr cb);
 
 void qemuAgentClose(qemuAgentPtr mon);
+
+void qemuAgentNotifyClose(qemuAgentPtr mon);
 
 typedef enum {
     QEMU_AGENT_EVENT_NONE = 0,
@@ -108,4 +110,12 @@ int qemuAgentSetTime(qemuAgentPtr mon,
                      long long seconds,
                      unsigned int nseconds,
                      bool sync);
+
+int qemuAgentGetInterfaces(qemuAgentPtr mon,
+                           virDomainInterfacePtr **ifaces);
+
+int qemuAgentSetUserPassword(qemuAgentPtr mon,
+                             const char *user,
+                             const char *password,
+                             bool crypted);
 #endif /* __QEMU_AGENT_H__ */

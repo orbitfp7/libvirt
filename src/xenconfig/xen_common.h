@@ -43,18 +43,24 @@ int xenConfigGetULong(virConfPtr conf,
                       unsigned long *value,
                       unsigned long def);
 
+int
+xenConfigCopyString(virConfPtr conf,
+                    const char *name,
+                    char **value);
+
 int xenConfigCopyStringOpt(virConfPtr conf,
                            const char *name,
                            char **value);
 
 int xenParseConfigCommon(virConfPtr conf,
                          virDomainDefPtr def,
-                         virCapsPtr caps,
-                         int xendConfigVersion);
+                         virCapsPtr caps);
 
 int xenFormatConfigCommon(virConfPtr conf,
                           virDomainDefPtr def,
-                          virConnectPtr conn,
-                          int xendConfigVersion);
+                          virConnectPtr conn);
+
+
+int xenDomainDefAddImplicitInputDevice(virDomainDefPtr def);
 
 #endif /* __VIR_XEN_COMMON_H__ */

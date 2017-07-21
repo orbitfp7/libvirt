@@ -1,7 +1,7 @@
 /*
  * libvirt-host.c: entry points for vir{Connect,Node}Ptr APIs
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -51,7 +51,7 @@ VIR_LOG_INIT("libvirt.host");
 int
 virConnectRef(virConnectPtr conn)
 {
-    VIR_DEBUG("conn=%p refs=%d", conn, conn ? conn->object.u.s.refs : 0);
+    VIR_DEBUG("conn=%p refs=%d", conn, conn ? conn->object.parent.u.s.refs : 0);
 
     virResetLastError();
 
@@ -321,7 +321,7 @@ int
 virConnectGetMaxVcpus(virConnectPtr conn,
                       const char *type)
 {
-    VIR_DEBUG("conn=%p, type=%s", conn, type);
+    VIR_DEBUG("conn=%p, type=%s", conn, NULLSTR(type));
 
     virResetLastError();
 
@@ -965,7 +965,7 @@ virConnectCompareCPU(virConnectPtr conn,
                      const char *xmlDesc,
                      unsigned int flags)
 {
-    VIR_DEBUG("conn=%p, xmlDesc=%s, flags=%x", conn, xmlDesc, flags);
+    VIR_DEBUG("conn=%p, xmlDesc=%s, flags=%x", conn, NULLSTR(xmlDesc), flags);
 
     virResetLastError();
 
@@ -1009,7 +1009,7 @@ virConnectGetCPUModelNames(virConnectPtr conn, const char *arch, char ***models,
                            unsigned int flags)
 {
     VIR_DEBUG("conn=%p, arch=%s, models=%p, flags=%x",
-              conn, arch, models, flags);
+              conn, NULLSTR(arch), models, flags);
     virResetLastError();
 
     if (models)
@@ -1051,6 +1051,9 @@ virConnectGetCPUModelNames(virConnectPtr conn, const char *arch, char ***models,
  * will explicitly list all CPU features that are part of the host CPU,
  * without this flag features that are part of the CPU model will not be
  * listed.
+ *
+ * If @flags includes VIR_CONNECT_BASELINE_CPU_MIGRATABLE, the resulting
+ * CPU will not include features that block migration.
  *
  * Returns XML description of the computed CPU (caller frees) or NULL on error.
  */
@@ -1216,7 +1219,7 @@ virConnectRegisterCloseCallback(virConnectPtr conn,
 
     virObjectRef(conn);
 
-    virMutexLock(&conn->lock);
+    virObjectLock(conn);
     virObjectLock(conn->closeCallback);
 
     virCheckNonNullArgGoto(cb, error);
@@ -1233,13 +1236,13 @@ virConnectRegisterCloseCallback(virConnectPtr conn,
     conn->closeCallback->freeCallback = freecb;
 
     virObjectUnlock(conn->closeCallback);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
 
     return 0;
 
  error:
     virObjectUnlock(conn->closeCallback);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
     virDispatchError(conn);
     virObjectUnref(conn);
     return -1;
@@ -1269,7 +1272,7 @@ virConnectUnregisterCloseCallback(virConnectPtr conn,
 
     virCheckConnectReturn(conn, -1);
 
-    virMutexLock(&conn->lock);
+    virObjectLock(conn);
     virObjectLock(conn->closeCallback);
 
     virCheckNonNullArgGoto(cb, error);
@@ -1285,15 +1288,15 @@ virConnectUnregisterCloseCallback(virConnectPtr conn,
         conn->closeCallback->freeCallback(conn->closeCallback->opaque);
     conn->closeCallback->freeCallback = NULL;
 
-    virObjectUnref(conn);
     virObjectUnlock(conn->closeCallback);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
+    virObjectUnref(conn);
 
     return 0;
 
  error:
     virObjectUnlock(conn->closeCallback);
-    virMutexUnlock(&conn->lock);
+    virObjectUnlock(conn);
     virDispatchError(conn);
     return -1;
 }

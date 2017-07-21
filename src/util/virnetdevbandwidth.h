@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009-2013 Red Hat, Inc.
+ * Copyright (C) 2009-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -46,9 +46,8 @@ void virNetDevBandwidthFree(virNetDevBandwidthPtr def);
 int virNetDevBandwidthSet(const char *ifname,
                           virNetDevBandwidthPtr bandwidth,
                           bool hierarchical_class)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
-int virNetDevBandwidthClear(const char *ifname)
-    ATTRIBUTE_NONNULL(1);
+    ATTRIBUTE_RETURN_CHECK;
+int virNetDevBandwidthClear(const char *ifname);
 int virNetDevBandwidthCopy(virNetDevBandwidthPtr *dest,
                            const virNetDevBandwidth *src)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
@@ -69,9 +68,14 @@ int virNetDevBandwidthUnplug(const char *brname,
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevBandwidthUpdateRate(const char *ifname,
-                                 const char *class_id,
+                                 unsigned int id,
                                  virNetDevBandwidthPtr bandwidth,
                                  unsigned long long new_rate)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_RETURN_CHECK;
+
+int virNetDevBandwidthUpdateFilter(const char *ifname,
+                                   const virMacAddr *ifmac_ptr,
+                                   unsigned int id)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
     ATTRIBUTE_RETURN_CHECK;
 #endif /* __VIR_NETDEV_BANDWIDTH_H__ */

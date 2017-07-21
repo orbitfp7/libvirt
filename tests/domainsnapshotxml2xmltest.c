@@ -97,11 +97,10 @@ testCompareXMLToXMLFiles(const char *inxml,
 
     if (!(def = virDomainSnapshotDefParseString(inXmlData, driver.caps,
                                                 driver.xmlopt,
-                                                QEMU_EXPECTED_VIRT_TYPES,
                                                 flags)))
         goto cleanup;
 
-    if (!(actual = virDomainSnapshotDefFormat(uuid, def,
+    if (!(actual = virDomainSnapshotDefFormat(uuid, def, driver.caps,
                                               VIR_DOMAIN_DEF_FORMAT_SECURE,
                                               internal)))
         goto cleanup;
@@ -115,7 +114,7 @@ testCompareXMLToXMLFiles(const char *inxml,
     }
 
     if (STRNEQ(outXmlData, actual)) {
-        virtTestDifference(stderr, outXmlData, actual);
+        virtTestDifferenceFull(stderr, outXmlData, outxml, actual, inxml);
         goto cleanup;
     }
 
@@ -153,13 +152,11 @@ mymain(void)
 {
     int ret = 0;
 
-    if ((driver.caps = testQemuCapsInit()) == NULL)
+    if (qemuTestDriverInit(&driver) < 0)
         return EXIT_FAILURE;
 
-    if (!(driver.xmlopt = virQEMUDriverCreateXMLConf(&driver))) {
-        virObjectUnref(driver.caps);
-        return EXIT_FAILURE;
-    }
+    /* TODO: test with format probing disabled too */
+    driver.config->allowDiskFormatProbing = true;
 
     if (VIR_ALLOC(testSnapshotXMLVariableLineRegex) < 0)
         goto cleanup;
@@ -228,8 +225,7 @@ mymain(void)
     if (testSnapshotXMLVariableLineRegex)
         regfree(testSnapshotXMLVariableLineRegex);
     VIR_FREE(testSnapshotXMLVariableLineRegex);
-    virObjectUnref(driver.caps);
-    virObjectUnref(driver.xmlopt);
+    qemuTestDriverFree(&driver);
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

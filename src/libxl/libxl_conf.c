@@ -35,6 +35,7 @@
 #include "virlog.h"
 #include "virerror.h"
 #include "datatypes.h"
+#include "virconf.h"
 #include "virfile.h"
 #include "virstring.h"
 #include "viralloc.h"
@@ -101,6 +102,7 @@ libxlDriverConfigDispose(void *obj)
     VIR_FREE(cfg->libDir);
     VIR_FREE(cfg->saveDir);
     VIR_FREE(cfg->autoDumpDir);
+    VIR_FREE(cfg->lockManagerName);
 }
 
 
@@ -179,6 +181,9 @@ libxlCapsInitHost(libxl_ctx *ctx, virCapsPtr caps)
     host_pae = phy_info.hw_cap[0] & LIBXL_X86_FEATURE_PAE_MASK;
     if (host_pae &&
         virCapabilitiesAddHostFeature(caps, "pae") < 0)
+        return -1;
+
+    if (virCapabilitiesSetNetPrefix(caps, LIBXL_GENERATED_PREFIX_XEN) < 0)
         return -1;
 
     return 0;
@@ -305,7 +310,6 @@ libxlCapsInitGuests(libxl_ctx *ctx, virCapsPtr caps)
     regmatch_t subs[4];
     char *saveptr = NULL;
     size_t i;
-    virArch hostarch = caps->host.arch;
 
     struct guest_arch guest_archs[32];
     int nr_guest_archs = 0;
@@ -315,6 +319,12 @@ libxlCapsInitGuests(libxl_ctx *ctx, virCapsPtr caps)
     if ((ver_info = libxl_get_version_info(ctx)) == NULL) {
         virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
                        _("Failed to get version info from libxenlight"));
+        return -1;
+    }
+
+    if (!ver_info->capabilities) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("Failed to get capabilities from libxenlight"));
         return -1;
     }
 
@@ -426,13 +436,11 @@ libxlCapsInitGuests(libxl_ctx *ctx, virCapsPtr caps)
             return -1;
 
         if ((guest = virCapabilitiesAddGuest(caps,
-                                             guest_archs[i].hvm ? "hvm" : "xen",
+                                             guest_archs[i].hvm ? VIR_DOMAIN_OSTYPE_HVM : VIR_DOMAIN_OSTYPE_XEN,
                                              guest_archs[i].arch,
-                                             ((hostarch == VIR_ARCH_X86_64) ?
-                                              "/usr/lib64/xen/bin/qemu-dm" :
-                                              "/usr/lib/xen/bin/qemu-dm"),
+                                             LIBXL_EXECBIN_DIR "/qemu-system-i386",
                                              (guest_archs[i].hvm ?
-                                              "/usr/lib/xen/boot/hvmloader" :
+                                              LIBXL_FIRMWARE_DIR "/hvmloader" :
                                               NULL),
                                              1,
                                              machines)) == NULL) {
@@ -442,7 +450,7 @@ libxlCapsInitGuests(libxl_ctx *ctx, virCapsPtr caps)
         machines = NULL;
 
         if (virCapabilitiesAddGuestDomain(guest,
-                                          "xen",
+                                          VIR_DOMAIN_VIRT_XEN,
                                           NULL,
                                           NULL,
                                           0,
@@ -502,7 +510,7 @@ libxlMakeDomCreateInfo(libxl_ctx *ctx,
 
     libxl_domain_create_info_init(c_info);
 
-    if (STREQ(def->os.type, "hvm"))
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM)
         c_info->type = LIBXL_DOMAIN_TYPE_HVM;
     else
         c_info->type = LIBXL_DOMAIN_TYPE_PV;
@@ -628,7 +636,7 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
                       libxl_domain_config *d_config)
 {
     libxl_domain_build_info *b_info = &d_config->b_info;
-    int hvm = STREQ(def->os.type, "hvm");
+    int hvm = def->os.type == VIR_DOMAIN_OSTYPE_HVM;
     size_t i;
 
     libxl_domain_build_info_init(b_info);
@@ -638,11 +646,11 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
     else
         libxl_domain_build_info_init_type(b_info, LIBXL_DOMAIN_TYPE_PV);
 
-    b_info->max_vcpus = def->maxvcpus;
-    if (libxl_cpu_bitmap_alloc(ctx, &b_info->avail_vcpus, def->maxvcpus))
+    b_info->max_vcpus = virDomainDefGetVcpusMax(def);
+    if (libxl_cpu_bitmap_alloc(ctx, &b_info->avail_vcpus, b_info->max_vcpus))
         return -1;
     libxl_bitmap_set_none(&b_info->avail_vcpus);
-    for (i = 0; i < def->vcpus; i++)
+    for (i = 0; i < virDomainDefGetVcpus(def); i++)
         libxl_bitmap_set((&b_info->avail_vcpus), i);
 
     if (def->clock.ntimers > 0 &&
@@ -659,7 +667,7 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
         }
     }
     b_info->sched_params.weight = 1000;
-    b_info->max_memkb = def->mem.max_balloon;
+    b_info->max_memkb = virDomainDefGetMemoryInitial(def);
     b_info->target_memkb = def->mem.cur_balloon;
     if (hvm) {
         char bootorder[VIR_DOMAIN_BOOT_LAST + 1];
@@ -679,6 +687,19 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
                 libxl_defbool_set(&b_info->u.hvm.hpet, 1);
             }
         }
+
+        if (def->nsounds > 0) {
+            /*
+             * Use first sound device.  man xl.cfg(5) describes soundhw as
+             * a single device.  From the man page: soundhw=DEVICE
+             */
+            virDomainSoundDefPtr snd = def->sounds[0];
+
+            if (VIR_STRDUP(b_info->u.hvm.soundhw,
+                           virDomainSoundModelTypeToString(snd->model)) < 0)
+                return -1;
+        }
+
         for (i = 0; i < def->os.nBootDevs; i++) {
             switch (def->os.bootDevs[i]) {
                 case VIR_DOMAIN_BOOT_FLOPPY:
@@ -704,6 +725,15 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
         }
         if (VIR_STRDUP(b_info->u.hvm.boot, bootorder) < 0)
             return -1;
+
+#ifdef LIBXL_HAVE_BUILDINFO_KERNEL
+        if (VIR_STRDUP(b_info->cmdline, def->os.cmdline) < 0)
+            return -1;
+        if (VIR_STRDUP(b_info->kernel, def->os.kernel) < 0)
+            return -1;
+        if (VIR_STRDUP(b_info->ramdisk, def->os.initrd) < 0)
+            return -1;
+#endif
 
         if (def->emulator) {
             if (!virFileExists(def->emulator)) {
@@ -748,6 +778,47 @@ libxlMakeDomBuildInfo(virDomainDefPtr def,
         /* Disable VNC and SDL until explicitly enabled */
         libxl_defbool_set(&b_info->u.hvm.vnc.enable, 0);
         libxl_defbool_set(&b_info->u.hvm.sdl.enable, 0);
+
+        if (def->ninputs) {
+#ifdef LIBXL_HAVE_BUILDINFO_USBDEVICE_LIST
+            if (VIR_ALLOC_N(b_info->u.hvm.usbdevice_list, def->ninputs+1) < 0)
+                return -1;
+#else
+            if (def->ninputs > 1) {
+                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                        _("libxenlight supports only one input device"));
+                return -1;
+            }
+#endif
+            for (i = 0; i < def->ninputs; i++) {
+                char **usbdevice;
+
+                if (def->inputs[i]->bus != VIR_DOMAIN_INPUT_BUS_USB)
+                    continue;
+
+#ifdef LIBXL_HAVE_BUILDINFO_USBDEVICE_LIST
+                usbdevice = &b_info->u.hvm.usbdevice_list[i];
+#else
+                usbdevice = &b_info->u.hvm.usbdevice;
+#endif
+                switch (def->inputs[i]->type) {
+                    case VIR_DOMAIN_INPUT_TYPE_MOUSE:
+                        VIR_FREE(*usbdevice);
+                        if (VIR_STRDUP(*usbdevice, "mouse") < 0)
+                            return -1;
+                        break;
+                    case VIR_DOMAIN_INPUT_TYPE_TABLET:
+                        VIR_FREE(*usbdevice);
+                        if (VIR_STRDUP(*usbdevice, "tablet") < 0)
+                            return -1;
+                        break;
+                    default:
+                        virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                                _("Unknown input device type"));
+                        return -1;
+                }
+            }
+        }
 
         /*
          * The following comment and calculation were taken directly from
@@ -828,7 +899,7 @@ libxlDomainGetEmulatorType(const virDomainDef *def)
     virCommandPtr cmd = NULL;
     char *output = NULL;
 
-    if (STREQ(def->os.type, "hvm")) {
+    if (def->os.type == VIR_DOMAIN_OSTYPE_HVM) {
         if (def->emulator) {
             cmd = virCommandNew(def->emulator);
 
@@ -975,6 +1046,18 @@ libxlMakeDisk(virDomainDiskDefPtr l_disk, libxl_device_disk *x_disk)
         return -1;
     }
 
+    if (l_disk->domain_name) {
+#ifdef LIBXL_HAVE_DEVICE_BACKEND_DOMNAME
+        if (VIR_STRDUP(x_disk->backend_domname, l_disk->domain_name) < 0)
+            return -1;
+#else
+        virReportError(VIR_ERR_XML_DETAIL, "%s",
+                _("this version of libxenlight does not "
+                  "support backend domain name"));
+        return -1;
+#endif
+    }
+
     return 0;
 }
 
@@ -1011,8 +1094,9 @@ libxlMakeNic(virDomainDefPtr def,
              virDomainNetDefPtr l_nic,
              libxl_device_nic *x_nic)
 {
-    bool ioemu_nic = STREQ(def->os.type, "hvm");
+    bool ioemu_nic = def->os.type == VIR_DOMAIN_OSTYPE_HVM;
     virDomainNetType actual_type = virDomainNetGetActualType(l_nic);
+    virNetDevBandwidthPtr actual_bw;
 
     /* TODO: Where is mtu stored?
      *
@@ -1103,6 +1187,7 @@ libxlMakeNic(virDomainDefPtr def,
         case VIR_DOMAIN_NET_TYPE_SERVER:
         case VIR_DOMAIN_NET_TYPE_CLIENT:
         case VIR_DOMAIN_NET_TYPE_MCAST:
+        case VIR_DOMAIN_NET_TYPE_UDP:
         case VIR_DOMAIN_NET_TYPE_INTERNAL:
         case VIR_DOMAIN_NET_TYPE_DIRECT:
         case VIR_DOMAIN_NET_TYPE_HOSTDEV:
@@ -1111,6 +1196,56 @@ libxlMakeNic(virDomainDefPtr def,
                     _("unsupported interface type %s"),
                     virDomainNetTypeToString(l_nic->type));
             return -1;
+    }
+
+    if (l_nic->domain_name) {
+#ifdef LIBXL_HAVE_DEVICE_BACKEND_DOMNAME
+        if (VIR_STRDUP(x_nic->backend_domname, l_nic->domain_name) < 0)
+            return -1;
+#else
+        virReportError(VIR_ERR_XML_DETAIL, "%s",
+                _("this version of libxenlight does not "
+                  "support backend domain name"));
+        return -1;
+#endif
+    }
+
+    /*
+     * Set bandwidth.
+     * From $xen-sources/docs/misc/xl-network-configuration.markdown:
+     *
+     *
+     * Specifies the rate at which the outgoing traffic will be limited to.
+     * The default if this keyword is not specified is unlimited.
+     *
+     * The rate may be specified as "<RATE>/s" or optionally "<RATE>/s@<INTERVAL>".
+     *
+     * `RATE` is in bytes and can accept suffixes:
+     *     GB, MB, KB, B for bytes.
+     *     Gb, Mb, Kb, b for bits.
+     * `INTERVAL` is in microseconds and can accept suffixes: ms, us, s.
+     *     It determines the frequency at which the vif transmission credit
+     *     is replenished. The default is 50ms.
+
+     * Vif rate limiting is credit-based. It means that for "1MB/s@20ms",
+     * the available credit will be equivalent of the traffic you would have
+     * done at "1MB/s" during 20ms. This will results in a credit of 20,000
+     * bytes replenished every 20,000 us.
+     *
+     *
+     * libvirt doesn't support the notion of rate limiting over an interval.
+     * Similar to xl's behavior when interval is not specified, set a default
+     * interval of 50ms and calculate the number of bytes per interval based
+     * on the specified average bandwidth.
+     */
+    actual_bw = virDomainNetGetActualBandwidth(l_nic);
+    if (actual_bw && actual_bw->out && actual_bw->out->average) {
+        uint64_t bytes_per_sec = actual_bw->out->average * 1024;
+        uint64_t bytes_per_interval =
+            (((uint64_t) bytes_per_sec * 50000UL) / 1000000UL);
+
+        x_nic->rate_bytes_per_interval = bytes_per_interval;
+        x_nic->rate_interval_usecs =  50000UL;
     }
 
     return 0;
@@ -1170,6 +1305,8 @@ libxlMakeVfb(virPortAllocatorPtr graphicsports,
     switch (l_vfb->type) {
         case VIR_DOMAIN_GRAPHICS_TYPE_SDL:
             libxl_defbool_set(&x_vfb->sdl.enable, 1);
+            libxl_defbool_set(&x_vfb->vnc.enable, 0);
+            libxl_defbool_set(&x_vfb->sdl.opengl, 0);
             if (VIR_STRDUP(x_vfb->sdl.display, l_vfb->data.sdl.display) < 0)
                 return -1;
             if (VIR_STRDUP(x_vfb->sdl.xauthority, l_vfb->data.sdl.xauth) < 0)
@@ -1177,6 +1314,7 @@ libxlMakeVfb(virPortAllocatorPtr graphicsports,
             break;
         case  VIR_DOMAIN_GRAPHICS_TYPE_VNC:
             libxl_defbool_set(&x_vfb->vnc.enable, 1);
+            libxl_defbool_set(&x_vfb->sdl.enable, 0);
             /* driver handles selection of free port */
             libxl_defbool_set(&x_vfb->vnc.findunused, 0);
             if (l_vfb->data.vnc.autoport) {
@@ -1194,6 +1332,8 @@ libxlMakeVfb(virPortAllocatorPtr graphicsports,
                 if (VIR_STRDUP(x_vfb->vnc.listen, listenAddr) < 0)
                     return -1;
             }
+            if (VIR_STRDUP(x_vfb->vnc.passwd, l_vfb->data.vnc.auth.passwd) < 0)
+                return -1;
             if (VIR_STRDUP(x_vfb->keymap, l_vfb->data.vnc.keymap) < 0)
                 return -1;
             break;
@@ -1234,37 +1374,6 @@ libxlMakeVfbList(virPortAllocatorPtr graphicsports,
     d_config->vkbs = x_vkbs;
     d_config->num_vfbs = d_config->num_vkbs = nvfbs;
 
-    /*
-     * VNC or SDL info must also be set in libxl_domain_build_info
-     * for HVM domains.  Use the first vfb device.
-     */
-    if (STREQ(def->os.type, "hvm")) {
-        libxl_domain_build_info *b_info = &d_config->b_info;
-        libxl_device_vfb vfb = d_config->vfbs[0];
-
-        if (libxl_defbool_val(vfb.vnc.enable)) {
-            libxl_defbool_set(&b_info->u.hvm.vnc.enable, true);
-            if (VIR_STRDUP(b_info->u.hvm.vnc.listen, vfb.vnc.listen) < 0)
-                goto error;
-            if (VIR_STRDUP(b_info->u.hvm.vnc.passwd, vfb.vnc.passwd) < 0)
-                goto error;
-            b_info->u.hvm.vnc.display = vfb.vnc.display;
-            libxl_defbool_set(&b_info->u.hvm.vnc.findunused,
-                              libxl_defbool_val(vfb.vnc.findunused));
-        } else if (libxl_defbool_val(vfb.sdl.enable)) {
-            libxl_defbool_set(&b_info->u.hvm.sdl.enable, true);
-            libxl_defbool_set(&b_info->u.hvm.sdl.opengl,
-                              libxl_defbool_val(vfb.sdl.opengl));
-            if (VIR_STRDUP(b_info->u.hvm.sdl.display, vfb.sdl.display) < 0)
-                goto error;
-            if (VIR_STRDUP(b_info->u.hvm.sdl.xauthority, vfb.sdl.xauthority) < 0)
-                goto error;
-        }
-
-        if (VIR_STRDUP(b_info->u.hvm.keymap, vfb.keymap) < 0)
-            goto error;
-    }
-
     return 0;
 
  error:
@@ -1277,11 +1386,140 @@ libxlMakeVfbList(virPortAllocatorPtr graphicsports,
     return -1;
 }
 
+/*
+ * Populate vfb info in libxl_domain_build_info struct for HVM domains.
+ * Prior to calling this function, libxlMakeVfbList must be called to
+ * populate libxl_domain_config->vfbs.
+ */
 static int
-libxlGetAutoballoonConf(libxlDriverConfigPtr cfg, bool *autoballoon)
+libxlMakeBuildInfoVfb(virPortAllocatorPtr graphicsports,
+                      virDomainDefPtr def,
+                      libxl_domain_config *d_config)
 {
+    libxl_domain_build_info *b_info = &d_config->b_info;
+    libxl_device_vfb x_vfb;
+    size_t i;
+
+    if (def->os.type != VIR_DOMAIN_OSTYPE_HVM)
+        return 0;
+
+    if (def->ngraphics == 0)
+        return 0;
+
+    /*
+     * Prefer SPICE, otherwise use first libxl_device_vfb device in
+     * libxl_domain_config->vfbs. Prior to calling this function,
+     */
+    for (i = 0; i < def->ngraphics; i++) {
+        virDomainGraphicsDefPtr l_vfb = def->graphics[i];
+        unsigned short port;
+        const char *listenAddr;
+
+        if (l_vfb->type != VIR_DOMAIN_GRAPHICS_TYPE_SPICE)
+            continue;
+
+        libxl_defbool_set(&b_info->u.hvm.spice.enable, true);
+
+        if (l_vfb->data.spice.autoport) {
+            if (virPortAllocatorAcquire(graphicsports, &port) < 0)
+                return -1;
+            l_vfb->data.spice.port = port;
+        }
+        b_info->u.hvm.spice.port = l_vfb->data.spice.port;
+
+        listenAddr = virDomainGraphicsListenGetAddress(l_vfb, 0);
+        if (VIR_STRDUP(b_info->u.hvm.spice.host, listenAddr) < 0)
+            return -1;
+
+        if (VIR_STRDUP(b_info->u.hvm.keymap, l_vfb->data.spice.keymap) < 0)
+            return -1;
+
+        if (l_vfb->data.spice.auth.passwd) {
+            if (VIR_STRDUP(b_info->u.hvm.spice.passwd,
+                           l_vfb->data.spice.auth.passwd) < 0)
+                return -1;
+            libxl_defbool_set(&b_info->u.hvm.spice.disable_ticketing, false);
+        } else {
+            libxl_defbool_set(&b_info->u.hvm.spice.disable_ticketing, true);
+        }
+
+        switch (l_vfb->data.spice.mousemode) {
+            /* client mouse mode is default in xl.cfg */
+        case VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_DEFAULT:
+        case VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_CLIENT:
+            libxl_defbool_set(&b_info->u.hvm.spice.agent_mouse, true);
+            break;
+        case VIR_DOMAIN_GRAPHICS_SPICE_MOUSE_MODE_SERVER:
+            libxl_defbool_set(&b_info->u.hvm.spice.agent_mouse, false);
+            break;
+        }
+
+#ifdef LIBXL_HAVE_SPICE_VDAGENT
+        if (l_vfb->data.spice.copypaste == VIR_TRISTATE_BOOL_YES) {
+            libxl_defbool_set(&b_info->u.hvm.spice.vdagent, true);
+            libxl_defbool_set(&b_info->u.hvm.spice.clipboard_sharing, true);
+        } else {
+            libxl_defbool_set(&b_info->u.hvm.spice.vdagent, false);
+            libxl_defbool_set(&b_info->u.hvm.spice.clipboard_sharing, false);
+        }
+#endif
+
+        return 0;
+    }
+
+    x_vfb = d_config->vfbs[0];
+
+    if (libxl_defbool_val(x_vfb.vnc.enable)) {
+        libxl_defbool_set(&b_info->u.hvm.vnc.enable, true);
+        if (VIR_STRDUP(b_info->u.hvm.vnc.listen, x_vfb.vnc.listen) < 0)
+            return -1;
+        if (VIR_STRDUP(b_info->u.hvm.vnc.passwd, x_vfb.vnc.passwd) < 0)
+            return -1;
+        b_info->u.hvm.vnc.display = x_vfb.vnc.display;
+        libxl_defbool_set(&b_info->u.hvm.vnc.findunused,
+                          libxl_defbool_val(x_vfb.vnc.findunused));
+    } else if (libxl_defbool_val(x_vfb.sdl.enable)) {
+        libxl_defbool_set(&b_info->u.hvm.sdl.enable, true);
+        libxl_defbool_set(&b_info->u.hvm.sdl.opengl,
+                          libxl_defbool_val(x_vfb.sdl.opengl));
+        if (VIR_STRDUP(b_info->u.hvm.sdl.display, x_vfb.sdl.display) < 0)
+            return -1;
+        if (VIR_STRDUP(b_info->u.hvm.sdl.xauthority, x_vfb.sdl.xauthority) < 0)
+            return -1;
+    }
+
+    if (VIR_STRDUP(b_info->u.hvm.keymap, x_vfb.keymap) < 0)
+        return -1;
+
+    return 0;
+}
+
+/*
+ * Get domain0 autoballoon configuration.  Honor user-specified
+ * setting in libxl.conf first.  If not specified, autoballooning
+ * is disabled when domain0's memory is set with 'dom0_mem'.
+ * Otherwise autoballooning is enabled.
+ */
+static int
+libxlGetAutoballoonConf(libxlDriverConfigPtr cfg,
+                        virConfPtr conf)
+{
+    virConfValuePtr p;
     regex_t regex;
     int res;
+
+    p = virConfGetValue(conf, "autoballoon");
+    if (p) {
+        if (p->type != VIR_CONF_ULONG) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s",
+                           _("Unexpected type for 'autoballoon' setting"));
+
+            return -1;
+        }
+        cfg->autoballoon = p->l != 0;
+        return 0;
+    }
 
     if ((res = regcomp(&regex,
                       "(^| )dom0_mem=((|min:|max:)[0-9]+[bBkKmMgG]?,?)+($| )",
@@ -1297,7 +1535,7 @@ libxlGetAutoballoonConf(libxlDriverConfigPtr cfg, bool *autoballoon)
 
     res = regexec(&regex, cfg->verInfo->commandline, 0, NULL, 0);
     regfree(&regex);
-    *autoballoon = res == REG_NOMATCH;
+    cfg->autoballoon = res == REG_NOMATCH;
     return 0;
 }
 
@@ -1306,6 +1544,7 @@ libxlDriverConfigNew(void)
 {
     libxlDriverConfigPtr cfg;
     char *log_file = NULL;
+    xentoollog_level log_level = XTL_DEBUG;
     char ebuf[1024];
     unsigned int free_mem;
 
@@ -1315,6 +1554,8 @@ libxlDriverConfigNew(void)
     if (!(cfg = virObjectNew(libxlDriverConfigClass)))
         return NULL;
 
+    if (VIR_STRDUP(cfg->configBaseDir, LIBXL_CONFIG_BASE_DIR) < 0)
+        goto error;
     if (VIR_STRDUP(cfg->configDir, LIBXL_CONFIG_DIR) < 0)
         goto error;
     if (VIR_STRDUP(cfg->autostartDir, LIBXL_AUTOSTART_DIR) < 0)
@@ -1348,9 +1589,24 @@ libxlDriverConfigNew(void)
     }
     VIR_FREE(log_file);
 
+    switch (virLogGetDefaultPriority()) {
+    case VIR_LOG_DEBUG:
+        log_level = XTL_DEBUG;
+        break;
+    case VIR_LOG_INFO:
+        log_level = XTL_INFO;
+        break;
+    case VIR_LOG_WARN:
+        log_level = XTL_WARN;
+        break;
+    case VIR_LOG_ERROR:
+        log_level = XTL_ERROR;
+        break;
+    }
+
     cfg->logger =
         (xentoollog_logger *)xtl_createlogger_stdiostream(cfg->logger_file,
-                                                          XTL_DEBUG, 0);
+                                      log_level, XTL_STDIOSTREAM_SHOW_DATE);
     if (!cfg->logger) {
         VIR_ERROR(_("cannot create logger for libxenlight, disabling driver"));
         goto error;
@@ -1377,10 +1633,6 @@ libxlDriverConfigNew(void)
         goto error;
     }
 
-    /* setup autoballoon */
-    if (libxlGetAutoballoonConf(cfg, &cfg->autoballoon) < 0)
-        goto error;
-
     return cfg;
 
  error:
@@ -1398,6 +1650,74 @@ libxlDriverConfigGet(libxlDriverPrivatePtr driver)
     cfg = virObjectRef(driver->config);
     libxlDriverUnlock(driver);
     return cfg;
+}
+
+int libxlDriverConfigLoadFile(libxlDriverConfigPtr cfg,
+                              const char *filename)
+{
+    virConfPtr conf = NULL;
+    virConfValuePtr p;
+    int ret = -1;
+
+    /* defaults for keepalive messages */
+    cfg->keepAliveInterval = 5;
+    cfg->keepAliveCount = 5;
+
+    /* Check the file is readable before opening it, otherwise
+     * libvirt emits an error.
+     */
+    if (access(filename, R_OK) == -1) {
+        VIR_INFO("Could not read libxl config file %s", filename);
+        return 0;
+    }
+
+    if (!(conf = virConfReadFile(filename, 0)))
+        goto cleanup;
+
+    /* setup autoballoon */
+    if (libxlGetAutoballoonConf(cfg, conf) < 0)
+        goto cleanup;
+
+    if ((p = virConfGetValue(conf, "lock_manager"))) {
+        if (p->type != VIR_CONF_STRING) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s",
+                           _("Unexpected type for 'lock_manager' setting"));
+            goto cleanup;
+        }
+
+        if (VIR_STRDUP(cfg->lockManagerName, p->str) < 0)
+            goto cleanup;
+    }
+
+    if ((p = virConfGetValue(conf, "keepalive_interval"))) {
+        if (p->type != VIR_CONF_LONG && p->type != VIR_CONF_ULONG) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s",
+                           _("Unexpected type for 'keepalive_interval' setting"));
+            goto cleanup;
+        }
+
+        cfg->keepAliveInterval = p->l;
+    }
+
+    if ((p = virConfGetValue(conf, "keepalive_count"))) {
+        if (p->type != VIR_CONF_ULONG) {
+            virReportError(VIR_ERR_INTERNAL_ERROR,
+                           "%s",
+                           _("Unexpected type for 'keepalive_count' setting"));
+            goto cleanup;
+        }
+
+        cfg->keepAliveCount = p->l;
+    }
+
+    ret = 0;
+
+ cleanup:
+    virConfFree(conf);
+    return ret;
+
 }
 
 int
@@ -1512,6 +1832,17 @@ libxlMakeVideo(virDomainDefPtr def, libxl_domain_config *d_config)
             }
             break;
 
+#ifdef LIBXL_HAVE_QXL
+        case VIR_DOMAIN_VIDEO_TYPE_QXL:
+            b_info->u.hvm.vga.kind = LIBXL_VGA_INTERFACE_TYPE_QXL;
+            if (def->videos[0]->vram < 128 * 1024) {
+                virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                               _("videoram must be at least 128MB for QXL"));
+                return -1;
+            }
+            break;
+#endif
+
         default:
             virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("video type %s is not supported by libxl"),
@@ -1612,6 +1943,9 @@ libxlBuildDomainConfig(virPortAllocatorPtr graphicsports,
         return -1;
 
     if (libxlMakeVfbList(graphicsports, def, d_config) < 0)
+        return -1;
+
+    if (libxlMakeBuildInfoVfb(graphicsports, def, d_config) < 0)
         return -1;
 
     if (libxlMakePCIList(def, d_config) < 0)

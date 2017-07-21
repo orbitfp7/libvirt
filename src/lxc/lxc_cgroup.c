@@ -29,6 +29,7 @@
 #include "viralloc.h"
 #include "vircgroup.h"
 #include "virstring.h"
+#include "virsystemd.h"
 
 #define VIR_FROM_THIS VIR_FROM_LXC
 
@@ -69,6 +70,7 @@ static int virLXCCgroupSetupCpusetTune(virDomainDefPtr def,
 {
     int ret = -1;
     char *mask = NULL;
+    virDomainNumatuneMemMode mode;
 
     if (def->placement_mode != VIR_DOMAIN_CPU_PLACEMENT_MODE_AUTO &&
         def->cpumask) {
@@ -77,13 +79,17 @@ static int virLXCCgroupSetupCpusetTune(virDomainDefPtr def,
 
         if (virCgroupSetCpusetCpus(cgroup, mask) < 0)
             goto cleanup;
+        /* free mask to make sure we won't use it in a wrong way later */
+        VIR_FREE(mask);
     }
 
-    if (virDomainNumatuneGetMode(def->numatune, -1) !=
-        VIR_DOMAIN_NUMATUNE_MEM_STRICT)
+    if (virDomainNumatuneGetMode(def->numa, -1, &mode) < 0 ||
+        mode == VIR_DOMAIN_NUMATUNE_MEM_STRICT) {
+        ret = 0;
         goto cleanup;
+    }
 
-    if (virDomainNumatuneMaybeFormatNodeset(def->numatune, nodemask,
+    if (virDomainNumatuneMaybeFormatNodeset(def->numa, nodemask,
                                             &mask, -1) < 0)
         goto cleanup;
 
@@ -112,27 +118,37 @@ static int virLXCCgroupSetupBlkioTune(virDomainDefPtr def,
 
             if (dev->weight &&
                 (virCgroupSetBlkioDeviceWeight(cgroup, dev->path,
-                                               dev->weight) < 0))
+                                               dev->weight) < 0 ||
+                 virCgroupGetBlkioDeviceWeight(cgroup, dev->path,
+                                               &dev->weight) < 0))
                 return -1;
 
             if (dev->riops &&
                 (virCgroupSetBlkioDeviceReadIops(cgroup, dev->path,
-                                                 dev->riops) < 0))
+                                                 dev->riops) < 0 ||
+                 virCgroupGetBlkioDeviceReadIops(cgroup, dev->path,
+                                                 &dev->riops) < 0))
                 return -1;
 
             if (dev->wiops &&
                 (virCgroupSetBlkioDeviceWriteIops(cgroup, dev->path,
-                                                  dev->wiops) < 0))
+                                                  dev->wiops) < 0 ||
+                 virCgroupGetBlkioDeviceWriteIops(cgroup, dev->path,
+                                                  &dev->wiops) < 0))
                 return -1;
 
             if (dev->rbps &&
                 (virCgroupSetBlkioDeviceReadBps(cgroup, dev->path,
-                                                dev->rbps) < 0))
+                                                dev->rbps) < 0 ||
+                 virCgroupGetBlkioDeviceReadBps(cgroup, dev->path,
+                                                &dev->rbps) < 0))
                 return -1;
 
             if (dev->wbps &&
                 (virCgroupSetBlkioDeviceWriteBps(cgroup, dev->path,
-                                                 dev->wbps) < 0))
+                                                 dev->wbps) < 0 ||
+                 virCgroupGetBlkioDeviceWriteBps(cgroup, dev->path,
+                                                 &dev->wbps) < 0))
                 return -1;
         }
     }
@@ -146,20 +162,20 @@ static int virLXCCgroupSetupMemTune(virDomainDefPtr def,
 {
     int ret = -1;
 
-    if (virCgroupSetMemory(cgroup, def->mem.max_balloon) < 0)
+    if (virCgroupSetMemory(cgroup, virDomainDefGetMemoryInitial(def)) < 0)
         goto cleanup;
 
-    if (def->mem.hard_limit &&
-        virCgroupSetMemoryHardLimit(cgroup, def->mem.hard_limit) < 0)
-        goto cleanup;
+    if (virMemoryLimitIsSet(def->mem.hard_limit))
+        if (virCgroupSetMemoryHardLimit(cgroup, def->mem.hard_limit) < 0)
+            goto cleanup;
 
-    if (def->mem.soft_limit &&
-        virCgroupSetMemorySoftLimit(cgroup, def->mem.soft_limit) < 0)
-        goto cleanup;
+    if (virMemoryLimitIsSet(def->mem.soft_limit))
+        if (virCgroupSetMemorySoftLimit(cgroup, def->mem.soft_limit) < 0)
+            goto cleanup;
 
-    if (def->mem.swap_hard_limit &&
-        virCgroupSetMemSwapHardLimit(cgroup, def->mem.swap_hard_limit) < 0)
-        goto cleanup;
+    if (virMemoryLimitIsSet(def->mem.swap_hard_limit))
+        if (virCgroupSetMemSwapHardLimit(cgroup, def->mem.swap_hard_limit) < 0)
+            goto cleanup;
 
     ret = 0;
  cleanup:
@@ -377,7 +393,7 @@ static int virLXCCgroupSetupDeviceACL(virDomainDefPtr def,
 
     VIR_DEBUG("Allowing any disk block devs");
     for (i = 0; i < def->ndisks; i++) {
-        if (!virDomainDiskSourceIsBlockType(def->disks[i]->src))
+        if (!virDomainDiskSourceIsBlockType(def->disks[i]->src, false))
             continue;
 
         if (virCgroupAllowDevicePath(cgroup,
@@ -468,6 +484,13 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
                                 int *nicindexes)
 {
     virCgroupPtr cgroup = NULL;
+    char *machineName = virSystemdMakeMachineName("lxc",
+                                                  def->id,
+                                                  def->name,
+                                                  true);
+
+    if (!machineName)
+        goto cleanup;
 
     if (def->resource->partition[0] != '/') {
         virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
@@ -476,9 +499,8 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
         goto cleanup;
     }
 
-    if (virCgroupNewMachine(def->name,
+    if (virCgroupNewMachine(machineName,
                             "lxc",
-                            true,
                             def->uuid,
                             NULL,
                             initpid,
@@ -502,6 +524,8 @@ virCgroupPtr virLXCCgroupCreate(virDomainDefPtr def,
     }
 
  cleanup:
+    VIR_FREE(machineName);
+
     return cgroup;
 }
 

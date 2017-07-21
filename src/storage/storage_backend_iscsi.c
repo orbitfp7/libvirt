@@ -131,26 +131,27 @@ virStorageBackendISCSIFindLUs(virStoragePoolObjPtr pool,
                               const char *session)
 {
     char *sysfs_path;
-    int retval = 0;
+    int retval = -1;
     uint32_t host;
 
     if (virAsprintf(&sysfs_path,
                     "/sys/class/iscsi_session/session%s/device", session) < 0)
-        return -1;
+        goto cleanup;
 
     if (virStorageBackendISCSIGetHostNumber(sysfs_path, &host) < 0) {
         virReportSystemError(errno,
                              _("Failed to get host number for iSCSI session "
                                "with path '%s'"),
                              sysfs_path);
-        retval = -1;
+        goto cleanup;
     }
 
-    if (virStorageBackendSCSIFindLUs(pool, host) < 0) {
-        virReportSystemError(errno,
-                             _("Failed to find LUs on host %u"), host);
-        retval = -1;
-    }
+    if (virStorageBackendSCSIFindLUs(pool, host) < 0)
+        goto cleanup;
+
+    retval = 0;
+
+ cleanup:
 
     VIR_FREE(sysfs_path);
 
@@ -178,9 +179,8 @@ virStorageBackendISCSIFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
     virCheckFlags(0, NULL);
 
     if (!srcSpec) {
-        virReportError(VIR_ERR_INVALID_ARG,
-                       "%s", _("hostname and device path "
-                               "must be specified for iscsi sources"));
+        virReportError(VIR_ERR_INVALID_ARG, "%s",
+                       _("hostname must be specified for iscsi sources"));
         return NULL;
     }
 
@@ -237,8 +237,7 @@ virStorageBackendISCSIFindPoolSources(virConnectPtr conn ATTRIBUTE_UNUSED,
 }
 
 static int
-virStorageBackendISCSICheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
-                                virStoragePoolObjPtr pool,
+virStorageBackendISCSICheckPool(virStoragePoolObjPtr pool,
                                 bool *isActive)
 {
     char *session = NULL;
@@ -450,7 +449,12 @@ virStorageBackendISCSIStopPool(virConnectPtr conn ATTRIBUTE_UNUSED,
                                virStoragePoolObjPtr pool)
 {
     char *portal;
+    char *session;
     int ret = -1;
+
+    if ((session = virStorageBackendISCSISession(pool, true)) == NULL)
+        return 0;
+    VIR_FREE(session);
 
     if ((portal = virStorageBackendISCSIPortal(&pool->def->source)) == NULL)
         return -1;

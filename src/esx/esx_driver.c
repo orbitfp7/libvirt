@@ -24,7 +24,7 @@
 #include <config.h>
 
 #include "internal.h"
-#include "domain_conf.h"
+#include "virdomainobjlist.h"
 #include "snapshot_conf.h"
 #include "virauth.h"
 #include "viralloc.h"
@@ -267,7 +267,7 @@ esxParseVMXFileName(const char *fileName, void *opaque)
  * in the documentation of esxParseVMXFileName.
  *
  * Firstly parse the datastore path. Then use the datastore name to lookup the
- * datastore and it's mount path. Finally concatenate the mount path, directory
+ * datastore and its mount path. Finally concatenate the mount path, directory
  * and file name to an absolute path and return it. Detect the separator type
  * based on the mount path.
  */
@@ -573,7 +573,7 @@ esxCapsInit(esxPrivate *priv)
         goto failure;
 
     /* i686 */
-    guest = virCapabilitiesAddGuest(caps, "hvm",
+    guest = virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM,
                                     VIR_ARCH_I686,
                                     NULL, NULL, 0,
                                     NULL);
@@ -581,12 +581,12 @@ esxCapsInit(esxPrivate *priv)
     if (!guest)
         goto failure;
 
-    if (!virCapabilitiesAddGuestDomain(guest, "vmware", NULL, NULL, 0, NULL))
+    if (!virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_VMWARE, NULL, NULL, 0, NULL))
         goto failure;
 
     /* x86_64 */
     if (supportsLongMode == esxVI_Boolean_True) {
-        guest = virCapabilitiesAddGuest(caps, "hvm",
+        guest = virCapabilitiesAddGuest(caps, VIR_DOMAIN_OSTYPE_HVM,
                                         VIR_ARCH_X86_64,
                                         NULL, NULL,
                                         0, NULL);
@@ -594,7 +594,7 @@ esxCapsInit(esxPrivate *priv)
         if (!guest)
             goto failure;
 
-        if (!virCapabilitiesAddGuestDomain(guest, "vmware", NULL, NULL, 0, NULL))
+        if (!virCapabilitiesAddGuestDomain(guest, VIR_DOMAIN_VIRT_VMWARE, NULL, NULL, 0, NULL))
             goto failure;
     }
 
@@ -2741,14 +2741,15 @@ esxDomainGetXMLDesc(virDomainPtr domain, unsigned int flags)
     ctx.parseFileName = esxParseVMXFileName;
     ctx.formatFileName = NULL;
     ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = priv->primary->datacenterPath;
 
-    def = virVMXParseConfig(&ctx, priv->xmlopt, vmx);
+    def = virVMXParseConfig(&ctx, priv->xmlopt, priv->caps, vmx);
 
     if (def) {
         if (powerState != esxVI_VirtualMachinePowerState_PoweredOff)
             def->id = id;
 
-        xml = virDomainDefFormat(def,
+        xml = virDomainDefFormat(def, priv->caps,
                                  virDomainDefFormatConvertXMLFlags(flags));
     }
 
@@ -2799,11 +2800,13 @@ esxConnectDomainXMLFromNative(virConnectPtr conn, const char *nativeFormat,
     ctx.parseFileName = esxParseVMXFileName;
     ctx.formatFileName = NULL;
     ctx.autodetectSCSIControllerModel = NULL;
+    ctx.datacenterPath = NULL;
 
-    def = virVMXParseConfig(&ctx, priv->xmlopt, nativeConfig);
+    def = virVMXParseConfig(&ctx, priv->xmlopt, priv->caps, nativeConfig);
 
     if (def)
-        xml = virDomainDefFormat(def, VIR_DOMAIN_DEF_FORMAT_INACTIVE);
+        xml = virDomainDefFormat(def, priv->caps,
+                                 VIR_DOMAIN_DEF_FORMAT_INACTIVE);
 
     virDomainDefFree(def);
 
@@ -2841,7 +2844,6 @@ esxConnectDomainXMLToNative(virConnectPtr conn, const char *nativeFormat,
         return NULL;
 
     def = virDomainDefParseString(domainXml, priv->caps, priv->xmlopt,
-                                  1 << VIR_DOMAIN_VIRT_VMWARE,
                                   VIR_DOMAIN_DEF_PARSE_INACTIVE);
 
     if (!def)
@@ -2854,6 +2856,7 @@ esxConnectDomainXMLToNative(virConnectPtr conn, const char *nativeFormat,
     ctx.parseFileName = NULL;
     ctx.formatFileName = esxFormatVMXFileName;
     ctx.autodetectSCSIControllerModel = esxAutodetectSCSIControllerModel;
+    ctx.datacenterPath = NULL;
 
     vmx = virVMXFormatConfig(&ctx, priv->xmlopt, def, virtualHW_version);
 
@@ -3056,7 +3059,6 @@ esxDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int flags)
 
     /* Parse domain XML */
     def = virDomainDefParseString(xml, priv->caps, priv->xmlopt,
-                                  1 << VIR_DOMAIN_VIRT_VMWARE,
                                   parse_flags);
 
     if (!def)
@@ -3098,6 +3100,7 @@ esxDomainDefineXMLFlags(virConnectPtr conn, const char *xml, unsigned int flags)
     ctx.parseFileName = NULL;
     ctx.formatFileName = esxFormatVMXFileName;
     ctx.autodetectSCSIControllerModel = esxAutodetectSCSIControllerModel;
+    ctx.datacenterPath = NULL;
 
     vmx = virVMXFormatConfig(&ctx, priv->xmlopt, def, virtualHW_version);
 
@@ -3990,52 +3993,37 @@ static unsigned long long
 esxNodeGetFreeMemory(virConnectPtr conn)
 {
     unsigned long long result = 0;
+    unsigned long long usageBytes = 0;
     esxPrivate *priv = conn->privateData;
     esxVI_String *propertyNameList = NULL;
-    esxVI_ObjectContent *resourcePool = NULL;
-    esxVI_DynamicProperty *dynamicProperty = NULL;
-    esxVI_ResourcePoolResourceUsage *resourcePoolResourceUsage = NULL;
+    esxVI_ObjectContent *hostSystem = NULL;
+    esxVI_Int *memoryUsage = NULL;
+    esxVI_Long *memorySize = NULL;
 
     if (esxVI_EnsureSession(priv->primary) < 0)
         return 0;
 
-    /* Get memory usage of resource pool */
-    if (esxVI_String_AppendValueToList(&propertyNameList,
-                                       "runtime.memory") < 0 ||
-        esxVI_LookupObjectContentByType(priv->primary,
-                                        priv->primary->computeResource->resourcePool,
-                                        "ResourcePool", propertyNameList,
-                                        &resourcePool,
-                                        esxVI_Occurrence_RequiredItem) < 0) {
+    /* Get memory usage of host system */
+    if (esxVI_String_AppendValueListToList(&propertyNameList,
+                                           "summary.quickStats.overallMemoryUsage\0"
+                                           "hardware.memorySize\0") < 0 ||
+        esxVI_LookupHostSystemProperties(priv->primary, propertyNameList,
+                                         &hostSystem) < 0 ||
+        esxVI_GetInt(hostSystem, "summary.quickStats.overallMemoryUsage",
+                      &memoryUsage, esxVI_Occurrence_RequiredItem) < 0 ||
+        esxVI_GetLong(hostSystem, "hardware.memorySize", &memorySize,
+                      esxVI_Occurrence_RequiredItem) < 0) {
         goto cleanup;
     }
 
-    for (dynamicProperty = resourcePool->propSet; dynamicProperty;
-         dynamicProperty = dynamicProperty->_next) {
-        if (STREQ(dynamicProperty->name, "runtime.memory")) {
-            if (esxVI_ResourcePoolResourceUsage_CastFromAnyType
-                  (dynamicProperty->val, &resourcePoolResourceUsage) < 0) {
-                goto cleanup;
-            }
-
-            break;
-        } else {
-            VIR_WARN("Unexpected '%s' property", dynamicProperty->name);
-        }
-    }
-
-    if (!resourcePoolResourceUsage) {
-        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                       _("Could not retrieve memory usage of resource pool"));
-        goto cleanup;
-    }
-
-    result = resourcePoolResourceUsage->unreservedForVm->value;
+    usageBytes = (unsigned long long) (memoryUsage->value) * 1048576;
+    result = memorySize->value - usageBytes;
 
  cleanup:
     esxVI_String_Free(&propertyNameList);
-    esxVI_ObjectContent_Free(&resourcePool);
-    esxVI_ResourcePoolResourceUsage_Free(&resourcePoolResourceUsage);
+    esxVI_ObjectContent_Free(&hostSystem);
+    esxVI_Int_Free(&memoryUsage);
+    esxVI_Long_Free(&memorySize);
 
     return result;
 }
@@ -4203,7 +4191,7 @@ esxDomainSnapshotCreateXML(virDomainPtr domain, const char *xmlDesc,
         return NULL;
 
     def = virDomainSnapshotDefParseString(xmlDesc, priv->caps,
-                                          priv->xmlopt, 0, 0);
+                                          priv->xmlopt, 0);
 
     if (!def)
         return NULL;
@@ -4304,7 +4292,7 @@ esxDomainSnapshotGetXMLDesc(virDomainSnapshotPtr snapshot,
 
     virUUIDFormat(snapshot->domain->uuid, uuid_string);
 
-    xml = virDomainSnapshotDefFormat(uuid_string, &def,
+    xml = virDomainSnapshotDefFormat(uuid_string, &def, priv->caps,
                                      virDomainDefFormatConvertXMLFlags(flags),
                                      0);
 

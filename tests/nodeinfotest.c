@@ -24,19 +24,15 @@ main(void)
 #else
 
 static int
-linuxTestCompareFiles(const char *cpuinfofile,
-                      char *sysfs_dir,
+linuxTestCompareFiles(char *sysfs_prefix,
+                      const char *cpuinfofile,
                       virArch arch,
                       const char *outputfile)
 {
     int ret = -1;
     char *actualData = NULL;
-    char *expectData = NULL;
     virNodeInfo nodeinfo;
     FILE *cpuinfo;
-
-    if (virtTestLoadFile(outputfile, &expectData) < 0)
-        goto fail;
 
     cpuinfo = fopen(cpuinfofile, "r");
     if (!cpuinfo) {
@@ -46,11 +42,11 @@ linuxTestCompareFiles(const char *cpuinfofile,
     }
 
     memset(&nodeinfo, 0, sizeof(nodeinfo));
-    if (linuxNodeInfoCPUPopulate(cpuinfo, sysfs_dir, arch, &nodeinfo) < 0) {
+    if (linuxNodeInfoCPUPopulate(sysfs_prefix, cpuinfo, arch, &nodeinfo) < 0) {
         if (virTestGetDebug()) {
             virErrorPtr error = virSaveLastError();
             if (error && error->code != VIR_ERR_OK)
-                fprintf(stderr, "\n%s\n", error->message);
+                VIR_TEST_DEBUG("\n%s\n", error->message);
             virFreeError(error);
         }
         VIR_FORCE_FCLOSE(cpuinfo);
@@ -66,15 +62,12 @@ linuxTestCompareFiles(const char *cpuinfofile,
                     nodeinfo.cores, nodeinfo.threads) < 0)
         goto fail;
 
-    if (STRNEQ(actualData, expectData)) {
-        virtTestDifference(stderr, expectData, actualData);
+    if (virtTestCompareToFile(actualData, outputfile) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
-    VIR_FREE(expectData);
     VIR_FREE(actualData);
     return ret;
 }
@@ -109,15 +102,11 @@ linuxCPUStatsCompareFiles(const char *cpustatfile,
 {
     int ret = -1;
     char *actualData = NULL;
-    char *expectData = NULL;
     FILE *cpustat = NULL;
     virNodeCPUStatsPtr params = NULL;
     virBuffer buf = VIR_BUFFER_INITIALIZER;
     size_t i;
     int nparams = 0;
-
-    if (virtTestLoadFile(outfile, &expectData) < 0)
-        goto fail;
 
     if (!(cpustat = fopen(cpustatfile, "r"))) {
         virReportSystemError(errno, "failed to open '%s': ", cpustatfile);
@@ -150,17 +139,14 @@ linuxCPUStatsCompareFiles(const char *cpustatfile,
         goto fail;
     }
 
-    if (STRNEQ(actualData, expectData)) {
-        virtTestDifference(stderr, expectData, actualData);
+    if (virtTestCompareToFile(actualData, outfile) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
     virBufferFreeAndReset(&buf);
     VIR_FORCE_FCLOSE(cpustat);
-    VIR_FREE(expectData);
     VIR_FREE(actualData);
     VIR_FREE(params);
     return ret;
@@ -177,12 +163,12 @@ linuxTestNodeInfo(const void *opaque)
 {
     int result = -1;
     char *cpuinfo = NULL;
-    char *sysfs_dir = NULL;
+    char *sysfs_prefix = NULL;
     char *output = NULL;
     struct linuxTestNodeInfoData *data = (struct linuxTestNodeInfoData *) opaque;
     const char *archStr = virArchToString(data->arch);
 
-    if (virAsprintf(&sysfs_dir, "%s/nodeinfodata/linux-%s",
+    if (virAsprintf(&sysfs_prefix, "%s/nodeinfodata/linux-%s",
                     abs_srcdir, data->testName) < 0 ||
         virAsprintf(&cpuinfo, "%s/nodeinfodata/linux-%s-%s.cpuinfo",
                     abs_srcdir, archStr, data->testName) < 0 ||
@@ -191,12 +177,12 @@ linuxTestNodeInfo(const void *opaque)
         goto cleanup;
     }
 
-    result = linuxTestCompareFiles(cpuinfo, sysfs_dir, data->arch, output);
+    result = linuxTestCompareFiles(sysfs_prefix, cpuinfo, data->arch, output);
 
  cleanup:
     VIR_FREE(cpuinfo);
     VIR_FREE(output);
-    VIR_FREE(sysfs_dir);
+    VIR_FREE(sysfs_prefix);
 
     return result;
 }
@@ -246,6 +232,15 @@ mymain(void)
         {"test7", VIR_ARCH_X86_64},
         {"test8", VIR_ARCH_X86_64},
         {"raspberrypi", VIR_ARCH_ARMV6L},
+        {"f21-mustang", VIR_ARCH_AARCH64},
+        {"rhelsa-3.19.0-mustang", VIR_ARCH_AARCH64},
+        {"deconf-cpus", VIR_ARCH_PPC64},
+        /* subcores, default configuration */
+        {"subcores1", VIR_ARCH_PPC64},
+        /* subcores, some of the cores are offline */
+        {"subcores2", VIR_ARCH_PPC64},
+        /* subcores, invalid configuration */
+        {"subcores3", VIR_ARCH_PPC64},
     };
 
     if (virInitialize() < 0)
@@ -267,6 +262,6 @@ mymain(void)
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIRT_TEST_MAIN(mymain)
+VIRT_TEST_MAIN_PRELOAD(mymain, abs_builddir "/.libs/nodeinfomock.so")
 
 #endif /* __linux__ */

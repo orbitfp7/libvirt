@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2014 Red Hat, Inc.
+ * Copyright (C) 2007-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -114,7 +114,6 @@ static int virNetDevBridgeCmd(const char *brname,
 #endif
 
 #if defined(HAVE_STRUCT_IFREQ) && defined(__linux__)
-# define SYSFS_NET_DIR "/sys/class/net"
 /*
  * Bridge parameters can be set via sysfs on newish kernels,
  * or by  ioctl on older kernels. Perhaps we could just use
@@ -130,7 +129,7 @@ static int virNetDevBridgeSet(const char *brname,
     char *path = NULL;
     int ret = -1;
 
-    if (virAsprintf(&path, "%s/%s/bridge/%s", SYSFS_NET_DIR, brname, paramname) < 0)
+    if (virAsprintf(&path, SYSFS_NET_DIR "%s/bridge/%s", brname, paramname) < 0)
         return -1;
 
     if (virFileExists(path)) {
@@ -177,7 +176,7 @@ static int virNetDevBridgeGet(const char *brname,
     char *path = NULL;
     int ret = -1;
 
-    if (virAsprintf(&path, "%s/%s/bridge/%s", SYSFS_NET_DIR, brname, paramname) < 0)
+    if (virAsprintf(&path, SYSFS_NET_DIR "%s/bridge/%s", brname, paramname) < 0)
         return -1;
 
     if (virFileExists(path)) {
@@ -235,8 +234,8 @@ virNetDevBridgePortSet(const char *brname,
 
     snprintf(valuestr, sizeof(valuestr), "%lu", value);
 
-    if (virAsprintf(&path, "%s/%s/brif/%s/%s",
-                    SYSFS_NET_DIR, brname, ifname, paramname) < 0)
+    if (virAsprintf(&path, SYSFS_NET_DIR "%s/brif/%s/%s",
+                    brname, ifname, paramname) < 0)
         return -1;
 
     if (!virFileExists(path))
@@ -265,8 +264,8 @@ virNetDevBridgePortGet(const char *brname,
     char *valuestr = NULL;
     int ret = -1;
 
-    if (virAsprintf(&path, "%s/%s/brif/%s/%s",
-                    SYSFS_NET_DIR, brname, ifname, paramname) < 0)
+    if (virAsprintf(&path, SYSFS_NET_DIR "%s/brif/%s/%s",
+                    brname, ifname, paramname) < 0)
         return -1;
 
     if (virFileReadAll(path, INT_BUFSIZE_BOUND(unsigned long), &valuestr) < 0)
@@ -396,7 +395,8 @@ virNetDevBridgePortSetUnicastFlood(const char *brname ATTRIBUTE_UNUSED,
  * Returns 0 in case of success or -1 on failure
  */
 #if defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRADDBR)
-int virNetDevBridgeCreate(const char *brname)
+static int
+virNetDevBridgeCreateWithIoctl(const char *brname)
 {
     int fd = -1;
     int ret = -1;
@@ -416,8 +416,109 @@ int virNetDevBridgeCreate(const char *brname)
     VIR_FORCE_CLOSE(fd);
     return ret;
 }
+#endif
+
+#if defined(__linux__) && defined(HAVE_LIBNL)
+int
+virNetDevBridgeCreate(const char *brname)
+{
+    /* use a netlink RTM_NEWLINK message to create the bridge */
+    const char *type = "bridge";
+    int rc = -1;
+    struct nlmsghdr *resp = NULL;
+    struct nlmsgerr *err;
+    struct ifinfomsg ifinfo = { .ifi_family = AF_UNSPEC };
+    unsigned int recvbuflen;
+    struct nl_msg *nl_msg;
+    struct nlattr *linkinfo;
+
+    nl_msg = nlmsg_alloc_simple(RTM_NEWLINK,
+                                NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL);
+    if (!nl_msg) {
+        virReportOOMError();
+        return -1;
+    }
+
+    if (nlmsg_append(nl_msg,  &ifinfo, sizeof(ifinfo), NLMSG_ALIGNTO) < 0)
+        goto buffer_too_small;
+    if (nla_put(nl_msg, IFLA_IFNAME, strlen(brname)+1, brname) < 0)
+        goto buffer_too_small;
+    if (!(linkinfo = nla_nest_start(nl_msg, IFLA_LINKINFO)))
+        goto buffer_too_small;
+    if (nla_put(nl_msg, IFLA_INFO_KIND, strlen(type), type) < 0)
+        goto buffer_too_small;
+    nla_nest_end(nl_msg, linkinfo);
+
+    if (virNetlinkCommand(nl_msg, &resp, &recvbuflen, 0, 0,
+                          NETLINK_ROUTE, 0) < 0) {
+        goto cleanup;
+    }
+
+    if (recvbuflen < NLMSG_LENGTH(0) || resp == NULL)
+        goto malformed_resp;
+
+    switch (resp->nlmsg_type) {
+    case NLMSG_ERROR:
+        err = (struct nlmsgerr *)NLMSG_DATA(resp);
+        if (resp->nlmsg_len < NLMSG_LENGTH(sizeof(*err)))
+            goto malformed_resp;
+
+        switch (err->error) {
+        case 0:
+            break;
+        case -EOPNOTSUPP:
+# if defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRADDBR)
+            /* fallback to ioctl if netlink doesn't support creating
+             * bridges
+             */
+            rc = virNetDevBridgeCreateWithIoctl(brname);
+            goto cleanup;
+# endif
+            /* intentionally fall through if virNetDevBridgeCreateWithIoctl()
+             * isn't available.
+             */
+        default:
+            virReportSystemError(-err->error,
+                                 _("error creating bridge interface %s"),
+                                 brname);
+            goto cleanup;
+        }
+        break;
+
+    case NLMSG_DONE:
+        break;
+    default:
+        goto malformed_resp;
+    }
+
+    rc = 0;
+ cleanup:
+    nlmsg_free(nl_msg);
+    VIR_FREE(resp);
+    return rc;
+
+ malformed_resp:
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("malformed netlink response message"));
+    goto cleanup;
+ buffer_too_small:
+    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                   _("allocated netlink buffer is too small"));
+    goto cleanup;
+}
+
+
+#elif defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRADDBR)
+int
+virNetDevBridgeCreate(const char *brname)
+{
+    return virNetDevBridgeCreateWithIoctl(brname);
+}
+
+
 #elif defined(HAVE_STRUCT_IFREQ) && defined(SIOCIFCREATE2)
-int virNetDevBridgeCreate(const char *brname)
+int
+virNetDevBridgeCreate(const char *brname)
 {
     int s;
     struct ifreq ifr;
@@ -458,10 +559,13 @@ int virNetDevBridgeCreate(const char *brname)
  * Returns 0 in case of success or an errno code in case of failure.
  */
 #if defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRDELBR)
-int virNetDevBridgeDelete(const char *brname)
+static int
+virNetDevBridgeDeleteWithIoctl(const char *brname)
 {
     int fd = -1;
     int ret = -1;
+
+    ignore_value(virNetDevSetOnline(brname, false));
 
     if ((fd = virNetDevSetupControl(NULL, NULL)) < 0)
         return -1;
@@ -478,8 +582,36 @@ int virNetDevBridgeDelete(const char *brname)
     VIR_FORCE_CLOSE(fd);
     return ret;
 }
+#endif
+
+
+#if defined(__linux__) && defined(HAVE_LIBNL)
+int
+virNetDevBridgeDelete(const char *brname)
+{
+    /* If netlink is available, use it, as it is successful at
+     * deleting a bridge even if it is currently IFF_UP. fallback to
+     * using ioctl(SIOCBRDELBR) if netlink fails with EOPNOTSUPP.
+     */
+# if defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRDELBR)
+    return virNetlinkDelLink(brname, virNetDevBridgeDeleteWithIoctl);
+# else
+    return virNetlinkDelLink(brname, NULL);
+# endif
+}
+
+
+#elif defined(HAVE_STRUCT_IFREQ) && defined(SIOCBRDELBR)
+int
+virNetDevBridgeDelete(const char *brname)
+{
+    return virNetDevBridgeDeleteWithIoctl(brname);
+}
+
+
 #elif defined(HAVE_STRUCT_IFREQ) && defined(SIOCIFDESTROY)
-int virNetDevBridgeDelete(const char *brname)
+int
+virNetDevBridgeDelete(const char *brname)
 {
     int s;
     struct ifreq ifr;

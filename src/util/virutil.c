@@ -81,10 +81,6 @@
 #include "virstring.h"
 #include "virutil.h"
 
-#ifndef NSIG
-# define NSIG 32
-#endif
-
 verify(sizeof(gid_t) <= sizeof(unsigned int) &&
        sizeof(uid_t) <= sizeof(unsigned int));
 
@@ -541,14 +537,21 @@ const char *virEnumToString(const char *const*types,
 }
 
 /* Translates a device name of the form (regex) /^[fhv]d[a-z]+[0-9]*$/
- * into the corresponding index (e.g. sda => 0, hdz => 25, vdaa => 26)
- * Note that any trailing string of digits is simply ignored.
+ * into the corresponding index and partition number
+ * (e.g. sda0 => (0,0), hdz2 => (25,2), vdaa12 => (26,12))
  * @param name The name of the device
- * @return name's index, or -1 on failure
+ * @param disk The disk index to be returned
+ * @param partition The partition index to be returned
+ * @return 0 on success, or -1 on failure
  */
-int virDiskNameToIndex(const char *name)
+int virDiskNameParse(const char *name, int *disk, int *partition)
 {
+    if (STREQ(name, "replication")) {
+        // TODO(ORBIT)
+        return 0;
+    }
     const char *ptr = NULL;
+    char *rem;
     int idx = 0;
     static char const* const drive_prefix[] = {"fd", "hd", "vd", "sd", "xvd", "ubd"};
     size_t i;
@@ -576,6 +579,36 @@ int virDiskNameToIndex(const char *name)
     size_t n_digits = strspn(ptr, "0123456789");
     if (ptr[n_digits] != '\0')
         return -1;
+
+    *disk = idx;
+
+    /* Convert trailing digits into our partition index */
+    if (partition) {
+        *partition = 0;
+
+        /* Shouldn't start by zero */
+        if (n_digits > 1 && *ptr == '0')
+            return -1;
+
+        if (n_digits && virStrToLong_i(ptr, &rem, 10, partition) < 0)
+            return -1;
+    }
+
+    return 0;
+}
+
+/* Translates a device name of the form (regex) /^[fhv]d[a-z]+[0-9]*$/
+ * into the corresponding index (e.g. sda => 0, hdz => 25, vdaa => 26)
+ * Note that any trailing string of digits is simply ignored.
+ * @param name The name of the device
+ * @return name's index, or -1 on failure
+ */
+int virDiskNameToIndex(const char *name)
+{
+    int idx;
+
+    if (virDiskNameParse(name, &idx, NULL))
+        idx = -1;
 
     return idx;
 }
@@ -633,16 +666,18 @@ char *virIndexToDiskName(int idx, const char *prefix)
  *         we got from getaddrinfo().  Return the value from gethostname()
  *         and hope for the best.
  */
-char *virGetHostname(void)
+static char *
+virGetHostnameImpl(bool quiet)
 {
     int r;
-    char hostname[HOST_NAME_MAX+1], *result;
+    char hostname[HOST_NAME_MAX+1], *result = NULL;
     struct addrinfo hints, *info;
 
     r = gethostname(hostname, sizeof(hostname));
     if (r == -1) {
-        virReportSystemError(errno,
-                             "%s", _("failed to determine host name"));
+        if (!quiet)
+            virReportSystemError(errno,
+                                 "%s", _("failed to determine host name"));
         return NULL;
     }
     NUL_TERMINATE(hostname);
@@ -654,7 +689,7 @@ char *virGetHostname(void)
          * string as-is; it's up to callers to check whether "localhost"
          * is allowed.
          */
-        ignore_value(VIR_STRDUP(result, hostname));
+        ignore_value(VIR_STRDUP_QUIET(result, hostname));
         goto cleanup;
     }
 
@@ -667,9 +702,10 @@ char *virGetHostname(void)
     hints.ai_family = AF_UNSPEC;
     r = getaddrinfo(hostname, NULL, &hints, &info);
     if (r != 0) {
-        VIR_WARN("getaddrinfo failed for '%s': %s",
-                 hostname, gai_strerror(r));
-        ignore_value(VIR_STRDUP(result, hostname));
+        if (!quiet)
+            VIR_WARN("getaddrinfo failed for '%s': %s",
+                     hostname, gai_strerror(r));
+        ignore_value(VIR_STRDUP_QUIET(result, hostname));
         goto cleanup;
     }
 
@@ -682,15 +718,31 @@ char *virGetHostname(void)
          * localhost.  Ignore the canonicalized name and just return the
          * original hostname
          */
-        ignore_value(VIR_STRDUP(result, hostname));
+        ignore_value(VIR_STRDUP_QUIET(result, hostname));
     else
         /* Caller frees this string. */
-        ignore_value(VIR_STRDUP(result, info->ai_canonname));
+        ignore_value(VIR_STRDUP_QUIET(result, info->ai_canonname));
 
     freeaddrinfo(info);
 
  cleanup:
+    if (!result)
+        virReportOOMError();
     return result;
+}
+
+
+char *
+virGetHostname(void)
+{
+    return virGetHostnameImpl(false);
+}
+
+
+char *
+virGetHostnameQuiet(void)
+{
+    return virGetHostnameImpl(true);
 }
 
 
@@ -1107,7 +1159,7 @@ virSetUIDGID(uid_t uid, gid_t gid, gid_t *groups ATTRIBUTE_UNUSED,
     }
 
 # if HAVE_SETGROUPS
-    if (ngroups && setgroups(ngroups, groups) < 0) {
+    if (gid != (gid_t)-1 && setgroups(ngroups, groups) < 0) {
         virReportSystemError(errno, "%s",
                              _("cannot set supplemental groups"));
         return -1;
@@ -1320,7 +1372,7 @@ int virGetUserID(const char *name ATTRIBUTE_UNUSED,
     virReportError(VIR_ERR_INTERNAL_ERROR,
                    "%s", _("virGetUserID is not available"));
 
-    return 0;
+    return -1;
 }
 
 
@@ -1330,7 +1382,7 @@ int virGetGroupID(const char *name ATTRIBUTE_UNUSED,
     virReportError(VIR_ERR_INTERNAL_ERROR,
                    "%s", _("virGetGroupID is not available"));
 
-    return 0;
+    return -1;
 }
 
 int
@@ -1819,6 +1871,8 @@ virFindSCSIHostByPCI(const char *sysfs_prefix,
         if (virStrToLong_ui(buf, NULL, 10, &read_unique_id) < 0)
             goto cleanup;
 
+        VIR_FREE(buf);
+
         if (read_unique_id != unique_id) {
             VIR_FREE(unique_path);
             continue;
@@ -1833,6 +1887,7 @@ virFindSCSIHostByPCI(const char *sysfs_prefix,
     VIR_FREE(unique_path);
     VIR_FREE(host_link);
     VIR_FREE(host_path);
+    VIR_FREE(buf);
     return ret;
 }
 
@@ -2365,29 +2420,6 @@ virFindFCHostCapableVport(const char *sysfs_prefix ATTRIBUTE_UNUSED)
 #endif /* __linux__ */
 
 /**
- * virCompareLimitUlong:
- *
- * Compare two unsigned long long numbers. Value '0' of the arguments has a
- * special meaning of 'unlimited' and thus greater than any other value.
- *
- * Returns 0 if the numbers are equal, -1 if b is greater, 1 if a is greater.
- */
-int
-virCompareLimitUlong(unsigned long long a, unsigned long long b)
-{
-    if (a == b)
-        return 0;
-
-    if (!b)
-        return -1;
-
-    if (a == 0 || a > b)
-        return 1;
-
-    return -1;
-}
-
-/**
  * virParseOwnershipIds:
  *
  * Parse the usual "uid:gid" ownership specification into uid_t and
@@ -2597,4 +2629,50 @@ long virGetSystemPageSizeKB(void)
     if (val < 0)
         return val;
     return val / 1024;
+}
+
+/**
+ * virMemoryLimitTruncate
+ *
+ * Return truncated memory limit to VIR_DOMAIN_MEMORY_PARAM_UNLIMITED as maximum
+ * which means that the limit is not set => unlimited.
+ */
+unsigned long long
+virMemoryLimitTruncate(unsigned long long value)
+{
+    return value < VIR_DOMAIN_MEMORY_PARAM_UNLIMITED ? value :
+        VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
+}
+
+/**
+ * virMemoryLimitIsSet
+ *
+ * Returns true if the limit is set and false for unlimited value.
+ */
+bool
+virMemoryLimitIsSet(unsigned long long value)
+{
+    return value < VIR_DOMAIN_MEMORY_PARAM_UNLIMITED;
+}
+
+
+/**
+ * virMemoryMaxValue
+ *
+ * @capped: whether the value must fit into unsigned long
+ *   (long long is assumed otherwise)
+ *
+ * Note: This function is mocked in tests/qemuxml2argvmock.c for test stability
+ *
+ * Returns the maximum possible memory value in bytes.
+ */
+unsigned long long
+virMemoryMaxValue(bool capped)
+{
+    /* On 32-bit machines, our bound is 0xffffffff * KiB. On 64-bit
+     * machines, our bound is off_t (2^63).  */
+    if (capped && sizeof(unsigned long) < sizeof(long long))
+        return 1024ull * ULONG_MAX;
+    else
+        return LLONG_MAX;
 }

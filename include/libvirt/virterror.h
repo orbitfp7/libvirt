@@ -4,7 +4,7 @@
  * Description: Provides the interfaces of the libvirt library to handle
  *              errors raised while using the library.
  *
- * Copyright (C) 2006, 2010-2012 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -125,6 +125,10 @@ typedef enum {
     VIR_FROM_FIREWALL = 59,     /* Error from firewall */
 
     VIR_FROM_POLKIT = 60,       /* Error from polkit code */
+    VIR_FROM_THREAD = 61,       /* Error from thread utils */
+    VIR_FROM_ADMIN = 62,        /* Error from admin backend */
+    VIR_FROM_LOGGING = 63,      /* Error from log manager */
+    VIR_FROM_XENXL = 64,        /* Error from Xen xl config code */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_ERR_DOMAIN_LAST
@@ -304,7 +308,8 @@ typedef enum {
     VIR_ERR_STORAGE_VOL_EXIST = 90,     /* the storage vol already exists */
     VIR_ERR_CPU_INCOMPATIBLE = 91,      /* given CPU is incompatible with host
                                            CPU*/
-    VIR_ERR_XML_INVALID_SCHEMA = 92,    /* XML document doens't validate against schema */
+    VIR_ERR_XML_INVALID_SCHEMA = 92,    /* XML document doesn't validate against schema */
+    VIR_ERR_MIGRATE_FINISH_OK = 93,     /* Finish API succeeded but it is expected to return NULL */
 } virErrorNumber;
 
 /**

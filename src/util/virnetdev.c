@@ -33,6 +33,10 @@
 #include "virstring.h"
 #include "virutil.h"
 
+#if HAVE_GETIFADDRS
+# include <ifaddrs.h>
+#endif
+
 #include <sys/ioctl.h>
 #include <net/if.h>
 #include <fcntl.h>
@@ -45,6 +49,11 @@
 # define VIR_NETDEV_FAMILY AF_LOCAL
 #else
 # undef HAVE_STRUCT_IFREQ
+#endif
+
+#if defined(SIOCETHTOOL) && defined(HAVE_STRUCT_IFREQ)
+# include <linux/types.h>
+# include <linux/ethtool.h>
 #endif
 
 #if HAVE_DECL_LINK_ADDR
@@ -78,6 +87,17 @@ VIR_LOG_INIT("util.netdev");
 # define VIR_IFF_ALLMULTI 0
 #endif
 
+#define RESOURCE_FILE_LEN 4096
+#if HAVE_DECL_ETHTOOL_GFEATURES
+# define TX_UDP_TNL 25
+# define GFEATURES_SIZE 2
+# define FEATURE_WORD(blocks, index, field)  ((blocks)[(index) / 32U].field)
+# define FEATURE_FIELD_FLAG(index)      (1U << (index) % 32U)
+# define FEATURE_BIT_IS_SET(blocks, index, field)        \
+    (FEATURE_WORD(blocks, index, field) & FEATURE_FIELD_FLAG(index))
+#endif
+#define VIR_DAD_WAIT_TIMEOUT 20 /* seconds */
+
 typedef enum {
     VIR_MCAST_TYPE_INDEX_TOKEN,
     VIR_MCAST_TYPE_NAME_TOKEN,
@@ -91,7 +111,7 @@ typedef enum {
 typedef struct _virNetDevMcastEntry virNetDevMcastEntry;
 typedef virNetDevMcastEntry *virNetDevMcastEntryPtr;
 struct _virNetDevMcastEntry  {
-        int index;
+        int idx;
         char name[VIR_MCAST_NAME_LEN];
         int users;
         bool global;
@@ -236,9 +256,11 @@ int virNetDevSetMAC(const char *ifname,
     virMacAddrGetRaw(macaddr, (unsigned char *)ifr.ifr_hwaddr.sa_data);
 
     if (ioctl(fd, SIOCSIFHWADDR, &ifr) < 0) {
+        char macstr[VIR_MAC_STRING_BUFLEN];
+
         virReportSystemError(errno,
-                             _("Cannot set interface MAC on '%s'"),
-                             ifname);
+                             _("Cannot set interface MAC to %s on '%s'"),
+                             virMacAddrFormat(macaddr, macstr), ifname);
         goto cleanup;
     }
 
@@ -271,8 +293,8 @@ int virNetDevSetMAC(const char *ifname,
 
         if (ioctl(s, SIOCSIFLLADDR, &ifr) < 0) {
             virReportSystemError(errno,
-                                 _("Cannot set interface MAC on '%s'"),
-                                 ifname);
+                                 _("Cannot set interface MAC to %s on '%s'"),
+                                 mac + 1, ifname);
             goto cleanup;
         }
 
@@ -341,7 +363,6 @@ int virNetDevGetMAC(const char *ifname,
 #endif
 
 
-
 /**
  * virNetDevReplaceMacAddress:
  * @macaddress: new MAC address for interface
@@ -379,7 +400,6 @@ virNetDevReplaceMacAddress(const char *linkdev,
         goto cleanup;
 
     ret = 0;
-
  cleanup:
     VIR_FREE(path);
     return ret;
@@ -551,20 +571,49 @@ int virNetDevSetMTUFromDevice(const char *ifname,
  */
 int virNetDevSetNamespace(const char *ifname, pid_t pidInNs)
 {
-    int rc;
+    int ret = -1;
     char *pid = NULL;
-    const char *argv[] = {
-        "ip", "link", "set", ifname, "netns", NULL, NULL
-    };
+    char *phy = NULL;
+    char *phy_path = NULL;
+    int len;
 
     if (virAsprintf(&pid, "%lld", (long long) pidInNs) == -1)
         return -1;
 
-    argv[5] = pid;
-    rc = virRun(argv, NULL);
+    /* The 802.11 wireless devices only move together with their PHY. */
+    if (virNetDevSysfsFile(&phy_path, ifname, "phy80211/name") < 0)
+        goto cleanup;
 
+    if ((len = virFileReadAllQuiet(phy_path, 1024, &phy)) <= 0) {
+        /* Not a wireless device. */
+        const char *argv[] = {
+            "ip", "link", "set", ifname, "netns", NULL, NULL
+        };
+
+        argv[5] = pid;
+        if (virRun(argv, NULL) < 0)
+            goto cleanup;
+
+    } else {
+        const char *argv[] = {
+            "iw", "phy", NULL, "set", "netns", NULL, NULL
+        };
+
+        /* Remove a line break. */
+        phy[len - 1] = '\0';
+
+        argv[2] = phy;
+        argv[5] = pid;
+        if (virRun(argv, NULL) < 0)
+            goto cleanup;
+    }
+
+    ret = 0;
+ cleanup:
+    VIR_FREE(phy_path);
+    VIR_FREE(phy);
     VIR_FREE(pid);
-    return rc;
+    return ret;
 }
 
 #if defined(SIOCSIFNAME) && defined(HAVE_STRUCT_IFREQ)
@@ -1259,6 +1308,117 @@ int virNetDevClearIPAddress(const char *ifname,
     return ret;
 }
 
+/* return true if there is a known address with 'tentative' flag set */
+static bool
+virNetDevParseDadStatus(struct nlmsghdr *nlh, int len,
+                        virSocketAddrPtr *addrs, size_t count)
+{
+    struct ifaddrmsg *ifaddrmsg_ptr;
+    unsigned int ifaddrmsg_len;
+    struct rtattr *rtattr_ptr;
+    size_t i;
+    struct in6_addr *addr;
+
+    VIR_WARNINGS_NO_CAST_ALIGN
+    for (; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
+    VIR_WARNINGS_RESET
+        if (NLMSG_PAYLOAD(nlh, 0) < sizeof(struct ifaddrmsg)) {
+            /* Message without payload is the last one. */
+            break;
+        }
+
+        ifaddrmsg_ptr = (struct ifaddrmsg *)NLMSG_DATA(nlh);
+        if (!(ifaddrmsg_ptr->ifa_flags & IFA_F_TENTATIVE)) {
+            /* Not tentative: we are not interested in this entry. */
+            continue;
+        }
+
+        ifaddrmsg_len = IFA_PAYLOAD(nlh);
+        VIR_WARNINGS_NO_CAST_ALIGN
+        rtattr_ptr = (struct rtattr *) IFA_RTA(ifaddrmsg_ptr);
+        for (; RTA_OK(rtattr_ptr, ifaddrmsg_len);
+            rtattr_ptr = RTA_NEXT(rtattr_ptr, ifaddrmsg_len)) {
+            VIR_WARNINGS_RESET
+            if (RTA_PAYLOAD(rtattr_ptr) != sizeof(struct in6_addr)) {
+                /* No address: ignore. */
+                continue;
+            }
+
+            /* We check only known addresses. */
+            for (i = 0; i < count; i++) {
+                addr = &addrs[i]->data.inet6.sin6_addr;
+                if (!memcmp(addr, RTA_DATA(rtattr_ptr),
+                            sizeof(struct in6_addr))) {
+                    /* We found matching tentative address. */
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/* return after DAD finishes for all known IPv6 addresses or an error */
+int
+virNetDevWaitDadFinish(virSocketAddrPtr *addrs, size_t count)
+{
+    struct nl_msg *nlmsg = NULL;
+    struct ifaddrmsg ifa;
+    struct nlmsghdr *resp = NULL;
+    unsigned int recvbuflen;
+    int ret = -1;
+    bool dad = true;
+    time_t max_time = time(NULL) + VIR_DAD_WAIT_TIMEOUT;
+
+    if (!(nlmsg = nlmsg_alloc_simple(RTM_GETADDR,
+                                     NLM_F_REQUEST | NLM_F_DUMP))) {
+        virReportOOMError();
+        return -1;
+    }
+
+    memset(&ifa, 0, sizeof(ifa));
+    /* DAD is for IPv6 adresses only. */
+    ifa.ifa_family = AF_INET6;
+    if (nlmsg_append(nlmsg, &ifa, sizeof(ifa), NLMSG_ALIGNTO) < 0) {
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("allocated netlink buffer is too small"));
+        goto cleanup;
+    }
+
+    /* Periodically query netlink until DAD finishes on all known addresses. */
+    while (dad && time(NULL) < max_time) {
+        if (virNetlinkCommand(nlmsg, &resp, &recvbuflen, 0, 0,
+                              NETLINK_ROUTE, 0) < 0)
+            goto cleanup;
+
+        if (virNetlinkGetErrorCode(resp, recvbuflen) < 0) {
+            virReportError(VIR_ERR_SYSTEM_ERROR, "%s",
+                           _("error reading DAD state information"));
+            goto cleanup;
+        }
+
+        /* Parse response. */
+        dad = virNetDevParseDadStatus(resp, recvbuflen, addrs, count);
+        if (dad)
+            usleep(1000 * 10);
+
+        VIR_FREE(resp);
+    }
+    /* Check timeout. */
+    if (dad) {
+        virReportError(VIR_ERR_SYSTEM_ERROR,
+                       _("Duplicate Address Detection "
+                         "not finished in %d seconds"), VIR_DAD_WAIT_TIMEOUT);
+    } else {
+        ret = 0;
+    }
+
+ cleanup:
+    VIR_FREE(resp);
+    nlmsg_free(nlmsg);
+    return ret;
+}
+
 #else /* defined(__linux__) && defined(HAVE_LIBNL) */
 
 int virNetDevSetIPAddress(const char *ifname,
@@ -1378,10 +1538,20 @@ int virNetDevClearIPAddress(const char *ifname,
     return ret;
 }
 
+/* return after DAD finishes for all known IPv6 addresses or an error */
+int
+virNetDevWaitDadFinish(virSocketAddrPtr *addrs ATTRIBUTE_UNUSED,
+                       size_t count ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Unable to wait for IPv6 DAD on this platform"));
+    return -1;
+}
+
 #endif /* defined(__linux__) && defined(HAVE_LIBNL) */
 
 /**
- * virNetDevGetIPv4Address:
+ * virNetDevGetIPv4AddressIoctl:
  * @ifname: name of the interface whose IP address we want
  * @addr: filled with the IPv4 address
  *
@@ -1391,22 +1561,21 @@ int virNetDevClearIPAddress(const char *ifname,
  * Returns 0 on success, -errno on failure.
  */
 #if defined(SIOCGIFADDR) && defined(HAVE_STRUCT_IFREQ)
-int virNetDevGetIPv4Address(const char *ifname,
-                            virSocketAddrPtr addr)
+static int
+virNetDevGetIPv4AddressIoctl(const char *ifname,
+                             virSocketAddrPtr addr)
 {
     int fd = -1;
     int ret = -1;
     struct ifreq ifr;
-
-    memset(addr, 0, sizeof(*addr));
-    addr->data.stor.ss_family = AF_UNSPEC;
 
     if ((fd = virNetDevSetupControl(ifname, &ifr)) < 0)
         return -1;
 
     if (ioctl(fd, SIOCGIFADDR, (char *)&ifr) < 0) {
         virReportSystemError(errno,
-                             _("Unable to get IPv4 address for interface %s"), ifname);
+                             _("Unable to get IPv4 address for interface %s via ioctl"),
+                             ifname);
         goto cleanup;
     }
 
@@ -1422,16 +1591,108 @@ int virNetDevGetIPv4Address(const char *ifname,
 
 #else /* ! SIOCGIFADDR */
 
-int virNetDevGetIPv4Address(const char *ifname ATTRIBUTE_UNUSED,
-                            virSocketAddrPtr addr ATTRIBUTE_UNUSED)
+static int
+virNetDevGetIPv4AddressIoctl(const char *ifname ATTRIBUTE_UNUSED,
+                             virSocketAddrPtr addr ATTRIBUTE_UNUSED)
 {
-    virReportSystemError(ENOSYS, "%s",
-                         _("Unable to get IPv4 address on this platform"));
-    return -1;
+    return -2;
 }
 
 #endif /* ! SIOCGIFADDR */
 
+/**
+ * virNetDevGetifaddrsAddress:
+ * @ifname: name of the interface whose IP address we want
+ * @addr: filled with the IP address
+ *
+ * This function gets the IP address for the interface @ifname
+ * and stores it in @addr
+ *
+ * Returns 0 on success, -1 on failure, -2 on unsupported.
+ */
+#if HAVE_GETIFADDRS
+static int
+virNetDevGetifaddrsAddress(const char *ifname,
+                           virSocketAddrPtr addr)
+{
+    struct ifaddrs *ifap, *ifa;
+    int ret = -1;
+
+    if (getifaddrs(&ifap) < 0) {
+        virReportSystemError(errno,
+                             _("Could not get interface list for '%s'"),
+                             ifname);
+        return -1;
+    }
+
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+        int family = ifa->ifa_addr->sa_family;
+
+        if (STRNEQ_NULLABLE(ifa->ifa_name, ifname))
+            continue;
+        if (family != AF_INET6 && family != AF_INET)
+            continue;
+
+        if (family == AF_INET6) {
+            addr->len = sizeof(addr->data.inet6);
+            memcpy(&addr->data.inet6, ifa->ifa_addr, addr->len);
+        } else {
+            addr->len = sizeof(addr->data.inet4);
+            memcpy(&addr->data.inet4, ifa->ifa_addr, addr->len);
+        }
+        addr->data.stor.ss_family = family;
+        ret = 0;
+        goto cleanup;
+    }
+
+    virReportError(VIR_ERR_INTERNAL_ERROR,
+                   _("no IP address found for interface '%s'"),
+                   ifname);
+ cleanup:
+    freeifaddrs(ifap);
+    return ret;
+}
+
+#else  /* ! HAVE_GETIFADDRS */
+
+static int
+virNetDevGetifaddrsAddress(const char *ifname ATTRIBUTE_UNUSED,
+                           virSocketAddrPtr addr ATTRIBUTE_UNUSED)
+{
+    return -2;
+}
+
+#endif
+
+/**
+ * virNetDevGetIPAddress:
+ * @ifname: name of the interface whose IP address we want
+ * @addr: filled with the IPv4 address
+ *
+ * This function gets the IPv4 address for the interface @ifname
+ * and stores it in @addr
+ *
+ * Returns 0 on success, -errno on failure.
+ */
+int
+virNetDevGetIPAddress(const char *ifname,
+                      virSocketAddrPtr addr)
+{
+    int ret;
+
+    memset(addr, 0, sizeof(*addr));
+    addr->data.stor.ss_family = AF_UNSPEC;
+
+    if ((ret = virNetDevGetifaddrsAddress(ifname, addr)) != -2)
+        return ret;
+
+    if ((ret = virNetDevGetIPv4AddressIoctl(ifname, addr)) != -2)
+        return ret;
+
+    virReportSystemError(ENOSYS, "%s",
+                         _("Unable to get IP address on this platform"));
+    return -1;
+}
 
 /**
  * virNetDevValidateConfig:
@@ -1512,14 +1773,13 @@ int virNetDevValidateConfig(const char *ifname ATTRIBUTE_UNUSED,
 
 
 #ifdef __linux__
-# define NET_SYSFS "/sys/class/net/"
 
-static int
+int
 virNetDevSysfsFile(char **pf_sysfs_device_link, const char *ifname,
-               const char *file)
+                   const char *file)
 {
 
-    if (virAsprintf(pf_sysfs_device_link, NET_SYSFS "%s/%s", ifname, file) < 0)
+    if (virAsprintf(pf_sysfs_device_link, SYSFS_NET_DIR "%s/%s", ifname, file) < 0)
         return -1;
     return 0;
 }
@@ -1529,7 +1789,7 @@ virNetDevSysfsDeviceFile(char **pf_sysfs_device_link, const char *ifname,
                      const char *file)
 {
 
-    if (virAsprintf(pf_sysfs_device_link, NET_SYSFS "%s/device/%s", ifname,
+    if (virAsprintf(pf_sysfs_device_link, SYSFS_NET_DIR "%s/device/%s", ifname,
                     file) < 0)
         return -1;
     return 0;
@@ -1549,7 +1809,8 @@ int
 virNetDevGetVirtualFunctions(const char *pfname,
                              char ***vfname,
                              virPCIDeviceAddressPtr **virt_fns,
-                             size_t *n_vfname)
+                             size_t *n_vfname,
+                             unsigned int *max_vfs)
 {
     int ret = -1;
     size_t i;
@@ -1559,12 +1820,13 @@ virNetDevGetVirtualFunctions(const char *pfname,
 
     *virt_fns = NULL;
     *n_vfname = 0;
+    *max_vfs = 0;
 
     if (virNetDevSysfsFile(&pf_sysfs_device_link, pfname, "device") < 0)
         return ret;
 
     if (virPCIGetVirtualFunctions(pf_sysfs_device_link, virt_fns,
-                                  n_vfname) < 0)
+                                  n_vfname, max_vfs) < 0)
         goto cleanup;
 
     if (VIR_ALLOC_N(*vfname, *n_vfname) < 0)
@@ -1734,7 +1996,8 @@ int
 virNetDevGetVirtualFunctions(const char *pfname ATTRIBUTE_UNUSED,
                              char ***vfname ATTRIBUTE_UNUSED,
                              virPCIDeviceAddressPtr **virt_fns ATTRIBUTE_UNUSED,
-                             size_t *n_vfname ATTRIBUTE_UNUSED)
+                             size_t *n_vfname ATTRIBUTE_UNUSED,
+                             unsigned int *max_vfs ATTRIBUTE_UNUSED)
 {
     virReportSystemError(ENOSYS, "%s",
                          _("Unable to get virtual functions on this platform"));
@@ -1777,8 +2040,21 @@ virNetDevGetVirtualFunctionInfo(const char *vfname ATTRIBUTE_UNUSED,
                          _("Unable to get virtual function info on this platform"));
     return -1;
 }
+
+int
+virNetDevSysfsFile(char **pf_sysfs_device_link ATTRIBUTE_UNUSED,
+                   const char *ifname ATTRIBUTE_UNUSED,
+                   const char *file ATTRIBUTE_UNUSED)
+{
+    virReportSystemError(ENOSYS, "%s",
+                         _("Unable to get sysfs info on this platform"));
+    return -1;
+}
+
+
 #endif /* !__linux__ */
 #if defined(__linux__) && defined(HAVE_LIBNL) && defined(IFLA_VF_MAX)
+
 
 static struct nla_policy ifla_vf_policy[IFLA_VF_MAX+1] = {
     [IFLA_VF_MAC]       = { .type = NLA_UNSPEC,
@@ -1996,10 +2272,17 @@ virNetDevSetVfConfig(const char *ifname, int ifindex, int vf,
             goto malformed_resp;
 
         if (err->error) {
+            char macstr[VIR_MAC_STRING_BUFLEN];
+
             virReportSystemError(-err->error,
-                _("error during set %s of ifindex %d"),
-                (macaddr ? (vlanid >= 0 ? "mac/vlan" : "mac") : "vlanid"),
-                ifindex);
+                                 _("Cannot set interface MAC/vlanid to %s/%d "
+                                   "for ifname %s ifindex %d vf %d"),
+                                 (macaddr
+                                  ? virMacAddrFormat(macaddr, macstr)
+                                  : "(unchanged)"),
+                                 vlanid,
+                                 ifname ? ifname : "(unspecified)",
+                                 ifindex, vf);
             goto cleanup;
         }
         break;
@@ -2116,6 +2399,28 @@ virNetDevReplaceVfConfig(const char *pflinkdev, int vf,
     char macstr[VIR_MAC_STRING_BUFLEN];
     char *fileData = NULL;
     int ifindex = -1;
+    bool pfIsOnline;
+
+    /* Assure that PF is online prior to twiddling with the VF.  It
+     * *should* be, but if the PF isn't online the changes made to the
+     * VF via the PF won't take effect, yet there will be no error
+     * reported. In the case that it isn't online, fail and report the
+     * error, since setting an unconfigured interface online
+     * automatically turns on IPv6 autoconfig, which may not be what
+     * the admin expects, so we want them to explicitly enable the PF
+     * in the host system network config.
+     */
+    if (virNetDevGetOnline(pflinkdev, &pfIsOnline) < 0)
+       goto cleanup;
+    if (!pfIsOnline) {
+        virReportError(VIR_ERR_INTERNAL_ERROR,
+                       _("Unable to configure VF %d of PF '%s' "
+                         "because the PF is not online. Please "
+                         "change host network config to put the "
+                         "PF online."),
+                       vf, pflinkdev);
+        goto cleanup;
+    }
 
     if (virNetDevGetVfConfig(pflinkdev, vf, &oldmac, &oldvlanid) < 0)
         goto cleanup;
@@ -2143,7 +2448,8 @@ virNetDevReplaceVfConfig(const char *pflinkdev, int vf,
 }
 
 static int
-virNetDevRestoreVfConfig(const char *pflinkdev, int vf,
+virNetDevRestoreVfConfig(const char *pflinkdev,
+                         int vf, const char *vflinkdev,
                          const char *stateDir)
 {
     int rc = -1;
@@ -2157,6 +2463,17 @@ virNetDevRestoreVfConfig(const char *pflinkdev, int vf,
     if (virAsprintf(&path, "%s/%s_vf%d",
                     stateDir, pflinkdev, vf) < 0)
         return rc;
+
+    if (vflinkdev && !virFileExists(path)) {
+        /* this VF's config may have been stored with
+         * virNetDevReplaceMacAddress while running an older version
+         * of libvirt. If so, the ${pf}_vf${id} file won't exist. In
+         * that case, try to restore using the older method with the
+         * VF's name directly.
+         */
+        rc = virNetDevRestoreMacAddress(vflinkdev, stateDir);
+        goto cleanup;
+    }
 
     if (virFileReadAll(path, 128, &fileData) < 0)
         goto cleanup;
@@ -2211,11 +2528,31 @@ virNetDevReplaceNetConfig(const char *linkdev, int vf,
                           const virMacAddr *macaddress, int vlanid,
                           const char *stateDir)
 {
+    int ret = -1;
+    char *pfdevname = NULL;
+
+    if (vf == -1 && virNetDevIsVirtualFunction(linkdev)) {
+        /* If this really *is* a VF and the caller just didn't know
+         * it, we should set the MAC address via PF+vf# instead of
+         * setting directly via VF, because the latter will be
+         * rejected any time after the former has been done.
+         */
+        if (virNetDevGetPhysicalFunction(linkdev, &pfdevname) < 0)
+            goto cleanup;
+        if (virNetDevGetVirtualFunctionIndex(pfdevname, linkdev, &vf) < 0)
+            goto cleanup;
+        linkdev = pfdevname;
+    }
+
     if (vf == -1)
-        return virNetDevReplaceMacAddress(linkdev, macaddress, stateDir);
+        ret = virNetDevReplaceMacAddress(linkdev, macaddress, stateDir);
     else
-        return virNetDevReplaceVfConfig(linkdev, vf, macaddress, vlanid,
-                                        stateDir);
+        ret = virNetDevReplaceVfConfig(linkdev, vf, macaddress, vlanid,
+                                       stateDir);
+
+ cleanup:
+    VIR_FREE(pfdevname);
+    return ret;
 }
 
 /**
@@ -2230,10 +2567,32 @@ virNetDevReplaceNetConfig(const char *linkdev, int vf,
 int
 virNetDevRestoreNetConfig(const char *linkdev, int vf, const char *stateDir)
 {
+    int ret = -1;
+    char *pfdevname = NULL;
+    const char *vfdevname = NULL;
+
+    if (vf == -1 && virNetDevIsVirtualFunction(linkdev)) {
+        /* If this really *is* a VF and the caller just didn't know
+         * it, we should set the MAC address via PF+vf# instead of
+         * setting directly via VF, because the latter will be
+         * rejected any time after the former has been done.
+         */
+        if (virNetDevGetPhysicalFunction(linkdev, &pfdevname) < 0)
+            goto cleanup;
+        if (virNetDevGetVirtualFunctionIndex(pfdevname, linkdev, &vf) < 0)
+            goto cleanup;
+        vfdevname = linkdev;
+        linkdev = pfdevname;
+    }
+
     if (vf == -1)
-        return virNetDevRestoreMacAddress(linkdev, stateDir);
+        ret = virNetDevRestoreMacAddress(linkdev, stateDir);
     else
-        return virNetDevRestoreVfConfig(linkdev, vf, stateDir);
+        ret = virNetDevRestoreVfConfig(linkdev, vf, vfdevname, stateDir);
+
+ cleanup:
+    VIR_FREE(pfdevname);
+    return ret;
 }
 
 #else /* defined(__linux__) && defined(HAVE_LIBNL) */
@@ -2485,7 +2844,7 @@ static int virNetDevParseMcast(char *buf, virNetDevMcastEntryPtr mcast)
     char *saveptr;
     char *endptr;
 
-    for (ifindex = 0, next = buf; ifindex < VIR_MCAST_TYPE_LAST; ifindex++,
+    for (ifindex = VIR_MCAST_TYPE_INDEX_TOKEN, next = buf; ifindex < VIR_MCAST_TYPE_LAST; ifindex++,
          next = NULL) {
         token = strtok_r(next, VIR_MCAST_TOKEN_DELIMS, &saveptr);
 
@@ -2505,7 +2864,7 @@ static int virNetDevParseMcast(char *buf, virNetDevMcastEntryPtr mcast)
                     return -1;
 
                 }
-                mcast->index = num;
+                mcast->idx = num;
                 break;
             case VIR_MCAST_TYPE_NAME_TOKEN:
                 if (virStrncpy(mcast->name, token, strlen(token),
@@ -2644,9 +3003,9 @@ static int virNetDevGetMulticastTable(const char *ifname,
     }
 
     ret = 0;
+
  cleanup:
     virNetDevMcastListClear(&mcast);
-
     return ret;
 }
 
@@ -2728,3 +3087,264 @@ int virNetDevGetRxFilter(const char *ifname,
     *filter = fil;
     return ret;
 }
+
+#if defined(SIOCETHTOOL) && defined(HAVE_STRUCT_IFREQ)
+
+/**
+ * virNetDevRDMAFeature
+ * This function checks for the availability of RDMA feature
+ * and add it to bitmap
+ *
+ * @ifname: name of the interface
+ * @out: add RDMA feature if exist to bitmap
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int
+virNetDevRDMAFeature(const char *ifname,
+                     virBitmapPtr *out)
+{
+    char *eth_devpath = NULL;
+    char *ib_devpath = NULL;
+    char *eth_res_buf = NULL;
+    char *ib_res_buf = NULL;
+    DIR *dirp = NULL;
+    struct dirent *dp;
+    int ret = -1;
+
+    if (!virFileExists(SYSFS_INFINIBAND_DIR))
+        return 0;
+
+    if (!(dirp = opendir(SYSFS_INFINIBAND_DIR))) {
+        virReportSystemError(errno,
+                             _("Failed to opendir path '%s'"),
+                             SYSFS_INFINIBAND_DIR);
+        goto cleanup;
+    }
+
+    if (virAsprintf(&eth_devpath, SYSFS_NET_DIR "%s/device/resource", ifname) < 0)
+        goto cleanup;
+    if (!virFileExists(eth_devpath))
+        goto cleanup;
+    if (virFileReadAll(eth_devpath, RESOURCE_FILE_LEN, &eth_res_buf) < 0)
+        goto cleanup;
+
+    while (virDirRead(dirp, &dp, SYSFS_INFINIBAND_DIR) > 0) {
+        if (dp->d_name[0] == '.')
+            continue;
+        if (virAsprintf(&ib_devpath, SYSFS_INFINIBAND_DIR "%s/device/resource",
+                        dp->d_name) < 0)
+            continue;
+        if (virFileReadAll(ib_devpath, RESOURCE_FILE_LEN, &ib_res_buf) > 0 &&
+            STREQ(eth_res_buf, ib_res_buf)) {
+            ignore_value(virBitmapSetBit(*out, VIR_NET_DEV_FEAT_RDMA));
+            break;
+        }
+        VIR_FREE(ib_devpath);
+        VIR_FREE(ib_res_buf);
+    }
+    ret = 0;
+
+ cleanup:
+    closedir(dirp);
+    VIR_FREE(eth_devpath);
+    VIR_FREE(ib_devpath);
+    VIR_FREE(eth_res_buf);
+    VIR_FREE(ib_res_buf);
+    return ret;
+}
+
+
+/**
+ * virNetDevSendEthtoolIoctl
+ * This function sends ethtool ioctl request
+ *
+ * @ifname: name of the interface
+ * @cmd: reference to an ethtool command structure
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+static int
+virNetDevSendEthtoolIoctl(const char *ifname, void *cmd)
+{
+    int ret = -1;
+    int fd = -1;
+    struct ifreq ifr;
+
+    /* Ultimately uses AF_PACKET for socket which requires privileged
+     * daemon support.
+     */
+    if ((fd = virNetDevSetupControl(ifname, &ifr)) < 0)
+        return ret;
+
+    ifr.ifr_data = cmd;
+    ret = ioctl(fd, SIOCETHTOOL, &ifr);
+    if (ret != 0) {
+        switch (errno) {
+            case EINVAL: /* kernel doesn't support SIOCETHTOOL */
+                VIR_DEBUG("ethtool ioctl: invalid request");
+                break;
+            case EOPNOTSUPP: /* kernel doesn't support specific feature */
+                VIR_DEBUG("ethtool ioctl: request not supported");
+                break;
+            default:
+                virReportSystemError(errno, "%s", _("ethtool ioctl error"));
+                goto cleanup;
+        }
+    }
+
+ cleanup:
+    VIR_FORCE_CLOSE(fd);
+    return ret;
+}
+
+
+/**
+* virNetDevFeatureAvailable
+* This function checks for the availability of a network device feature
+*
+* @ifname: name of the interface
+* @cmd: reference to an ethtool command structure
+*
+* Returns 0 if not found, 1 on success, and -1 on failure.
+*/
+static int
+virNetDevFeatureAvailable(const char *ifname, struct ethtool_value *cmd)
+{
+    int ret = -1;
+
+    cmd = (void*)cmd;
+    if (!virNetDevSendEthtoolIoctl(ifname, cmd))
+        ret = cmd->data > 0 ? 1 : 0;
+    return ret;
+}
+
+
+# if HAVE_DECL_ETHTOOL_GFEATURES
+/**
+ * virNetDevGFeatureAvailable
+ * This function checks for the availability of a network device gfeature
+ *
+ * @ifname: name of the interface
+ * @cmd: reference to a gfeatures ethtool command structure
+ *
+ * Returns 0 if not found, 1 on success, and -1 on failure.
+ */
+static int
+virNetDevGFeatureAvailable(const char *ifname, struct ethtool_gfeatures *cmd)
+{
+    int ret = -1;
+
+    cmd = (void*)cmd;
+    if (!virNetDevSendEthtoolIoctl(ifname, cmd))
+        ret = FEATURE_BIT_IS_SET(cmd->features, TX_UDP_TNL, active);
+    return ret;
+}
+# endif
+
+
+/**
+ * virNetDevGetFeatures:
+ * This function gets the nic offloads features available for ifname
+ *
+ * @ifname: name of the interface
+ * @out: bitmap of the available virNetDevFeature feature bits
+ *
+ * Returns 0 on success or if called from session mode, -1 on failure.
+ * If called from session mode, an empty bitmap is returned.
+ */
+int
+virNetDevGetFeatures(const char *ifname,
+                     virBitmapPtr *out)
+{
+    size_t i = -1;
+    struct ethtool_value cmd = { 0 };
+# if HAVE_DECL_ETHTOOL_GFEATURES
+    struct ethtool_gfeatures *g_cmd;
+# endif
+    struct elem{
+        const int cmd;
+        const virNetDevFeature feat;
+    };
+    /* legacy ethtool getters */
+    struct elem cmds[] = {
+        {ETHTOOL_GRXCSUM, VIR_NET_DEV_FEAT_GRXCSUM},
+        {ETHTOOL_GTXCSUM, VIR_NET_DEV_FEAT_GTXCSUM},
+        {ETHTOOL_GSG, VIR_NET_DEV_FEAT_GSG},
+        {ETHTOOL_GTSO, VIR_NET_DEV_FEAT_GTSO},
+# if HAVE_DECL_ETHTOOL_GGSO
+        {ETHTOOL_GGSO, VIR_NET_DEV_FEAT_GGSO},
+# endif
+# if HAVE_DECL_ETHTOOL_GGRO
+        {ETHTOOL_GGRO, VIR_NET_DEV_FEAT_GGRO},
+# endif
+    };
+
+    if (!(*out = virBitmapNew(VIR_NET_DEV_FEAT_LAST)))
+        return -1;
+
+    /* Only fetch features if we're privileged, but no need to fail */
+    if (geteuid() != 0) {
+        VIR_DEBUG("ETHTOOL feature bits not available in session mode");
+        return 0;
+    }
+
+    for (i = 0; i < ARRAY_CARDINALITY(cmds); i++) {
+        cmd.cmd = cmds[i].cmd;
+        if (virNetDevFeatureAvailable(ifname, &cmd) == 1)
+            ignore_value(virBitmapSetBit(*out, cmds[i].feat));
+    }
+
+# if HAVE_DECL_ETHTOOL_GFLAGS
+    size_t j = -1;
+    /* ethtool masks */
+    struct elem flags[] = {
+#  if HAVE_DECL_ETH_FLAG_LRO
+        {ETH_FLAG_LRO, VIR_NET_DEV_FEAT_LRO},
+#  endif
+#  if HAVE_DECL_ETH_FLAG_TXVLAN
+        {ETH_FLAG_RXVLAN, VIR_NET_DEV_FEAT_RXVLAN},
+        {ETH_FLAG_TXVLAN, VIR_NET_DEV_FEAT_TXVLAN},
+#  endif
+#  if HAVE_DECL_ETH_FLAG_NTUBLE
+        {ETH_FLAG_NTUPLE, VIR_NET_DEV_FEAT_NTUPLE},
+#  endif
+#  if HAVE_DECL_ETH_FLAG_RXHASH
+        {ETH_FLAG_RXHASH, VIR_NET_DEV_FEAT_RXHASH},
+#  endif
+    };
+
+    cmd.cmd = ETHTOOL_GFLAGS;
+    if (virNetDevFeatureAvailable(ifname, &cmd) == 1) {
+        for (j = 0; j < ARRAY_CARDINALITY(flags); j++) {
+            if (cmd.data & flags[j].cmd)
+                ignore_value(virBitmapSetBit(*out, flags[j].feat));
+        }
+    }
+# endif
+
+# if HAVE_DECL_ETHTOOL_GFEATURES
+    if (VIR_ALLOC_VAR(g_cmd,
+                      struct ethtool_get_features_block, GFEATURES_SIZE) < 0)
+        return -1;
+    g_cmd->cmd = ETHTOOL_GFEATURES;
+    g_cmd->size = GFEATURES_SIZE;
+    if (virNetDevGFeatureAvailable(ifname, g_cmd) == 1)
+        ignore_value(virBitmapSetBit(*out, VIR_NET_DEV_FEAT_TXUDPTNL));
+    VIR_FREE(g_cmd);
+# endif
+
+    if (virNetDevRDMAFeature(ifname, out) < 0)
+        return -1;
+    return 0;
+}
+#else
+int
+virNetDevGetFeatures(const char *ifname ATTRIBUTE_UNUSED,
+                     virBitmapPtr *out ATTRIBUTE_UNUSED)
+{
+    VIR_DEBUG("Getting network device features on %s is not implemented on this platform",
+              ifname);
+    return 0;
+}
+#endif

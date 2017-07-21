@@ -29,24 +29,6 @@
 # endif
 
 
-/*
- * virFreeCallback:
- * @opaque: opaque user data provided at registration
- *
- * Type for a callback cleanup function to be paired with a callback.  This
- * function will be called as a final chance to clean up the @opaque
- * registered with the primary callback, at the time when the primary
- * callback is deregistered.
- *
- * It is forbidden to call any other libvirt APIs from an
- * implementation of this callback, since it can be invoked
- * from a context which is not re-entrant safe. Failure to
- * abide by this requirement may lead to application deadlocks
- * or crashes.
- */
-typedef void (*virFreeCallback)(void *opaque);
-
-
 /**
  * virConnect:
  *
@@ -218,7 +200,7 @@ typedef enum {
  *
  * The types virSchedParameter, virBlkioParameter, and
  * virMemoryParameter are aliases of this type, for use when
- * targetting libvirt earlier than 0.9.2.
+ * targeting libvirt earlier than 0.9.2.
  */
 typedef struct _virTypedParameter virTypedParameter;
 
@@ -326,6 +308,12 @@ virTypedParamsAddString (virTypedParameterPtr *params,
                          const char *name,
                          const char *value);
 int
+virTypedParamsAddStringList(virTypedParameterPtr *params,
+                         int *nparams,
+                         int *maxparams,
+                         const char *name,
+                         const char **values);
+int
 virTypedParamsAddFromString(virTypedParameterPtr *params,
                          int *nparams,
                          int *maxparams,
@@ -354,7 +342,8 @@ struct _virNodeInfo {
     char model[32];       /* string indicating the CPU model */
     unsigned long memory; /* memory size in kilobytes */
     unsigned int cpus;    /* the number of active CPUs */
-    unsigned int mhz;     /* expected CPU frequency */
+    unsigned int mhz;     /* expected CPU frequency, 0 if not known or
+                             on unusual architectures */
     unsigned int nodes;   /* the number of NUMA cell, 1 for unusual NUMA
                              topologies or uniform memory access; check
                              capabilities XML for the actual NUMA topology */
@@ -748,18 +737,6 @@ char *                  virConnectGetSysinfo    (virConnectPtr conn,
 int virConnectSetKeepAlive(virConnectPtr conn,
                            int interval,
                            unsigned int count);
-
-typedef enum {
-    VIR_CONNECT_CLOSE_REASON_ERROR     = 0, /* Misc I/O error */
-    VIR_CONNECT_CLOSE_REASON_EOF       = 1, /* End-of-file from server */
-    VIR_CONNECT_CLOSE_REASON_KEEPALIVE = 2, /* Keepalive timer triggered */
-    VIR_CONNECT_CLOSE_REASON_CLIENT    = 3, /* Client requested it */
-
-# ifdef VIR_ENUM_SENTINELS
-    VIR_CONNECT_CLOSE_REASON_LAST
-# endif
-} virConnectCloseReason;
-
 /**
  * virConnectCloseFunc:
  * @conn: virConnect connection
@@ -862,6 +839,7 @@ int virConnectGetCPUModelNames(virConnectPtr conn,
  */
 typedef enum {
     VIR_CONNECT_BASELINE_CPU_EXPAND_FEATURES  = (1 << 0),  /* show all features */
+    VIR_CONNECT_BASELINE_CPU_MIGRATABLE = (1 << 1),  /* filter out non-migratable features */
 } virConnectBaselineCPUFlags;
 
 char *virConnectBaselineCPU(virConnectPtr conn,

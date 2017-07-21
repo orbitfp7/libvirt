@@ -73,6 +73,7 @@ typedef enum {
     VIR_STORAGE_FILE_FAT,
     VIR_STORAGE_FILE_VHD,
     VIR_STORAGE_FILE_PLOOP,
+    VIR_STORAGE_FILE_REPLICATION,
 
     /* Not a format, but a marker: all formats below this point have
      * libvirt support for following a backing chain */
@@ -88,6 +89,17 @@ typedef enum {
 } virStorageFileFormat;
 
 VIR_ENUM_DECL(virStorageFileFormat);
+
+typedef enum {
+    VIR_STORAGE_MODE_NONE,
+
+    VIR_STORAGE_MODE_PRIMARY,
+    VIR_STORAGE_MODE_SECONDARY,
+
+    VIR_STORAGE_MODE_LAST,
+} virStorageMode;
+
+VIR_ENUM_DECL(virStorageMode);
 
 typedef enum {
     VIR_STORAGE_FILE_FEATURE_LAZY_REFCOUNTS = 0,
@@ -282,6 +294,8 @@ struct _virStorageSource {
     /* Name of the child backing store recorded in metadata of the
      * current file.  */
     char *backingStoreRaw;
+    int mode; /* virStorageMode */
+    char *reference;
 };
 
 
@@ -362,6 +376,8 @@ bool virStorageSourceIsLocalStorage(virStorageSourcePtr src);
 bool virStorageSourceIsEmpty(virStorageSourcePtr src);
 void virStorageSourceFree(virStorageSourcePtr def);
 void virStorageSourceBackingStoreClear(virStorageSourcePtr def);
+int virStorageSourceUpdateBlockPhysicalSize(virStorageSourcePtr src,
+                                            bool report);
 virStorageSourcePtr virStorageSourceNewFromBacking(virStorageSourcePtr parent);
 virStorageSourcePtr virStorageSourceCopy(const virStorageSource *src,
                                          bool backingChain)
@@ -384,4 +400,5 @@ int virStorageFileGetRelativeBackingPath(virStorageSourcePtr from,
                                          char **relpath)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3);
 
+int virStorageFileCheckCompat(const char *compat);
 #endif /* __VIR_STORAGE_FILE_H__ */

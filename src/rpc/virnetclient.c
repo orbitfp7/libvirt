@@ -107,6 +107,7 @@ struct _virNetClient {
     virKeepAlivePtr keepalive;
     bool wantClose;
     int closeReason;
+    virErrorPtr error;
 
     virNetClientCloseFunc closeCb;
     void *closeOpaque;
@@ -349,11 +350,14 @@ virNetClientPtr virNetClientNewUNIX(const char *path,
 
 
 virNetClientPtr virNetClientNewTCP(const char *nodename,
-                                   const char *service)
+                                   const char *service,
+                                   int family)
 {
     virNetSocketPtr sock;
 
-    if (virNetSocketNewConnectTCP(nodename, service, &sock) < 0)
+    if (virNetSocketNewConnectTCP(nodename, service,
+                                  family,
+                                  &sock) < 0)
         return NULL;
 
     return virNetClientNew(sock, nodename);
@@ -383,6 +387,7 @@ virNetClientPtr virNetClientNewSSH(const char *nodename,
         VAR = VAL;
 virNetClientPtr virNetClientNewLibSSH2(const char *host,
                                        const char *port,
+                                       int family,
                                        const char *username,
                                        const char *privkeyPath,
                                        const char *knownHostsPath,
@@ -473,7 +478,9 @@ virNetClientPtr virNetClientNewLibSSH2(const char *host,
     if (!(command = virBufferContentAndReset(&buf)))
         goto no_memory;
 
-    if (virNetSocketNewConnectLibSSH2(host, port, username, privkey,
+    if (virNetSocketNewConnectLibSSH2(host, port,
+                                      family,
+                                      username, privkey,
                                       knownhosts, knownHostsVerify, authMethods,
                                       command, authPtr, uri, &sock) != 0)
         goto cleanup;
@@ -622,8 +629,6 @@ void virNetClientDispose(void *obj)
 #endif
 
     virNetMessageClear(&client->msg);
-
-    virObjectUnlock(client);
 }
 
 
@@ -632,10 +637,14 @@ virNetClientMarkClose(virNetClientPtr client,
                       int reason)
 {
     VIR_DEBUG("client=%p, reason=%d", client, reason);
+
     if (client->sock)
         virNetSocketRemoveIOCallback(client->sock);
+
     /* Don't override reason that's already set. */
     if (!client->wantClose) {
+        if (!client->error)
+            client->error = virSaveLastError();
         client->wantClose = true;
         client->closeReason = reason;
     }
@@ -665,6 +674,9 @@ virNetClientCloseLocked(virNetClientPtr client)
     ka = client->keepalive;
     client->keepalive = NULL;
     client->wantClose = false;
+
+    virFreeError(client->error);
+    client->error = NULL;
 
     if (ka || client->closeCb) {
         virNetClientCloseFunc closeCb = client->closeCb;
@@ -1448,6 +1460,7 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
                                    virNetClientCallPtr thiscall)
 {
     struct pollfd fds[2];
+    bool error = false;
     int ret;
 
     fds[0].fd = virNetSocketGetFD(client->sock);
@@ -1539,10 +1552,11 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
         if (virNetSocketHasCachedData(client->sock))
             fds[0].revents |= POLLIN;
 
-        /* If wantClose flag is set, pretend there was an error on the socket
+        /* If wantClose flag is set, pretend there was an error on the socket,
+         * but still read and process any data we received so far.
          */
         if (client->wantClose)
-            fds[0].revents = POLLERR;
+            error = true;
 
         if (fds[1].revents) {
             VIR_DEBUG("Woken up from poll by other thread");
@@ -1550,21 +1564,24 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
                 virReportSystemError(errno, "%s",
                                      _("read on wakeup fd failed"));
                 virNetClientMarkClose(client, VIR_CONNECT_CLOSE_REASON_ERROR);
-                goto error;
+                error = true;
+                /* Fall through to process any pending data. */
             }
         }
 
         if (fds[0].revents & POLLOUT) {
             if (virNetClientIOHandleOutput(client) < 0) {
                 virNetClientMarkClose(client, VIR_CONNECT_CLOSE_REASON_ERROR);
-                goto error;
+                error = true;
+                /* Fall through to process any pending data. */
             }
         }
 
         if (fds[0].revents & POLLIN) {
             if (virNetClientIOHandleInput(client) < 0) {
                 virNetClientMarkClose(client, VIR_CONNECT_CLOSE_REASON_ERROR);
-                goto error;
+                error = true;
+                /* Fall through to process any pending data. */
             }
         }
 
@@ -1589,6 +1606,9 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
             return 1;
         }
 
+        if (error)
+            goto error;
+
         if (fds[0].revents & (POLLHUP | POLLERR)) {
             virNetClientMarkClose(client, VIR_CONNECT_CLOSE_REASON_EOF);
             virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
@@ -1598,6 +1618,10 @@ static int virNetClientIOEventLoop(virNetClientPtr client,
     }
 
  error:
+    if (client->error) {
+        VIR_DEBUG("error on socket: %s", client->error->message);
+        virSetError(client->error);
+    }
     virNetClientCallRemove(&client->waitDispatch, thiscall);
     virNetClientIOEventLoopPassTheBuck(client, thiscall);
     return -1;

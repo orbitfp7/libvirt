@@ -51,9 +51,6 @@
 
 VIR_LOG_INIT("qemu.qemu_monitor_text");
 
-#define QEMU_CMD_PROMPT "\n(qemu) "
-#define QEMU_PASSWD_PROMPT "Password: "
-
 #define DEBUG_IO 0
 
 /* Return -1 for error, 0 for success */
@@ -567,7 +564,7 @@ int qemuMonitorTextGetCPUInfo(qemuMonitorPtr mon,
 
 
 int qemuMonitorTextGetVirtType(qemuMonitorPtr mon,
-                               int *virtType)
+                               virDomainVirtType *virtType)
 {
     char *reply = NULL;
 
@@ -666,12 +663,9 @@ static int qemuMonitorParseBalloonInfo(char *text,
 /* The reply from QEMU contains 'ballon: actual=421' where value is in MB */
 #define BALLOON_PREFIX "balloon: "
 
-/*
- * Returns: 0 if balloon not supported, +1 if balloon query worked
- * or -1 on failure
- */
-int qemuMonitorTextGetBalloonInfo(qemuMonitorPtr mon,
-                                  unsigned long long *currmem)
+int
+qemuMonitorTextGetBalloonInfo(qemuMonitorPtr mon,
+                              unsigned long long *currmem)
 {
     char *reply = NULL;
     int ret = -1;
@@ -838,212 +832,140 @@ int qemuMonitorTextGetBlockInfo(qemuMonitorPtr mon,
     return ret;
 }
 
-int qemuMonitorTextGetBlockStatsInfo(qemuMonitorPtr mon,
-                                     const char *dev_name,
-                                     long long *rd_req,
-                                     long long *rd_bytes,
-                                     long long *rd_total_times,
-                                     long long *wr_req,
-                                     long long *wr_bytes,
-                                     long long *wr_total_times,
-                                     long long *flush_req,
-                                     long long *flush_total_times,
-                                     long long *errs)
+
+int
+qemuMonitorTextGetAllBlockStatsInfo(qemuMonitorPtr mon,
+                                    virHashTablePtr hash)
 {
+    qemuBlockStatsPtr stats = NULL;
     char *info = NULL;
+    char *dev_name;
+    char **lines = NULL;
+    char **values = NULL;
+    char *line;
+    char *value;
+    char *key;
+    size_t i;
+    size_t j;
     int ret = -1;
-    char *dummy;
-    const char *p, *eol;
-    int devnamelen = strlen(dev_name);
+    int nstats;
+    int maxstats = 0;
 
     if (qemuMonitorHMPCommand(mon, "info blockstats", &info) < 0)
         goto cleanup;
 
-    /* If the command isn't supported then qemu prints the supported
-     * info commands, so the output starts "info ".  Since this is
-     * unlikely to be the name of a block device, we can use this
-     * to detect if qemu supports the command.
-     */
+    /* If the command isn't supported then qemu prints the supported info
+     * commands, so the output starts "info ".  Since this is unlikely to be
+     * the name of a block device, we can use this to detect if qemu supports
+     * the command. */
     if (strstr(info, "\ninfo ")) {
-        virReportError(VIR_ERR_OPERATION_INVALID,
-                       "%s",
+        virReportError(VIR_ERR_OPERATION_INVALID, "%s",
                        _("'info blockstats' not supported by this qemu"));
         goto cleanup;
     }
-
-    *rd_req = *rd_bytes = -1;
-    *wr_req = *wr_bytes = *errs = -1;
-
-    if (rd_total_times)
-        *rd_total_times = -1;
-    if (wr_total_times)
-        *wr_total_times = -1;
-    if (flush_req)
-        *flush_req = -1;
-    if (flush_total_times)
-        *flush_total_times = -1;
 
     /* The output format for both qemu & KVM is:
      *   blockdevice: rd_bytes=% wr_bytes=% rd_operations=% wr_operations=%
      *   (repeated for each block device)
      * where '%' is a 64 bit number.
      */
-    p = info;
+    if (!(lines = virStringSplit(info, "\n", 0)))
+        goto cleanup;
 
-    while (*p) {
-        /* New QEMU has separate names for host & guest side of the disk
-         * and libvirt gives the host side a 'drive-' prefix. The passed
-         * in dev_name is the guest side though
-         */
-        if (STRPREFIX(p, QEMU_DRIVE_HOST_PREFIX))
-            p += strlen(QEMU_DRIVE_HOST_PREFIX);
+    for (i = 0; lines[i] && *lines[i]; i++) {
+        line = lines[i];
 
-        if (STREQLEN(p, dev_name, devnamelen)
-            && p[devnamelen] == ':' && p[devnamelen+1] == ' ') {
+        if (VIR_ALLOC(stats) < 0)
+            goto cleanup;
 
-            eol = strchr(p, '\n');
-            if (!eol)
-                eol = p + strlen(p);
+        /* set the entries to -1, the JSON monitor enforces them, but it would
+         * be overly complex to achieve this here */
+        stats->rd_req = -1;
+        stats->rd_bytes = -1;
+        stats->wr_req = -1;
+        stats->wr_bytes = -1;
+        stats->rd_total_times = -1;
+        stats->wr_total_times = -1;
+        stats->flush_req = -1;
+        stats->flush_total_times = -1;
 
-            p += devnamelen+2;         /* Skip to first label. */
-
-            while (*p) {
-                if (STRPREFIX(p, "rd_bytes=")) {
-                    p += strlen("rd_bytes=");
-                    if (virStrToLong_ll(p, &dummy, 10, rd_bytes) == -1)
-                        VIR_DEBUG("error reading rd_bytes: %s", p);
-                } else if (STRPREFIX(p, "wr_bytes=")) {
-                    p += strlen("wr_bytes=");
-                    if (virStrToLong_ll(p, &dummy, 10, wr_bytes) == -1)
-                        VIR_DEBUG("error reading wr_bytes: %s", p);
-                } else if (STRPREFIX(p, "rd_operations=")) {
-                    p += strlen("rd_operations=");
-                    if (virStrToLong_ll(p, &dummy, 10, rd_req) == -1)
-                        VIR_DEBUG("error reading rd_req: %s", p);
-                } else if (STRPREFIX(p, "wr_operations=")) {
-                    p += strlen("wr_operations=");
-                    if (virStrToLong_ll(p, &dummy, 10, wr_req) == -1)
-                        VIR_DEBUG("error reading wr_req: %s", p);
-                } else if (rd_total_times &&
-                           STRPREFIX(p, "rd_total_time_ns=")) {
-                    p += strlen("rd_total_time_ns=");
-                    if (virStrToLong_ll(p, &dummy, 10, rd_total_times) == -1)
-                        VIR_DEBUG("error reading rd_total_times: %s", p);
-                } else if (wr_total_times &&
-                           STRPREFIX(p, "wr_total_time_ns=")) {
-                    p += strlen("wr_total_time_ns=");
-                    if (virStrToLong_ll(p, &dummy, 10, wr_total_times) == -1)
-                        VIR_DEBUG("error reading wr_total_times: %s", p);
-                } else if (flush_req &&
-                           STRPREFIX(p, "flush_operations=")) {
-                    p += strlen("flush_operations=");
-                    if (virStrToLong_ll(p, &dummy, 10, flush_req) == -1)
-                        VIR_DEBUG("error reading flush_req: %s", p);
-                } else if (flush_total_times &&
-                           STRPREFIX(p, "flush_total_time_ns=")) {
-                    p += strlen("flush_total_time_ns=");
-                    if (virStrToLong_ll(p, &dummy, 10, flush_total_times) == -1)
-                        VIR_DEBUG("error reading flush_total_times: %s", p);
-                } else {
-                    VIR_DEBUG("unknown block stat near %s", p);
-                }
-
-                /* Skip to next label. */
-                p = strchr(p, ' ');
-                if (!p || p >= eol) break;
-                p++;
-            }
-            ret = 0;
+        /* extract device name and make sure that it's followed by
+         * a colon and space */
+        dev_name = line;
+        if (!(line = strchr(line, ':')) && line[1] != ' ') {
+            virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                           _("info blockstats reply was malformed"));
             goto cleanup;
         }
 
-        /* Skip to next line. */
-        p = strchr(p, '\n');
-        if (!p) break;
-        p++;
-    }
+        *line = '\0';
+        line += 2;
 
-    /* If we reach here then the device was not found. */
-    virReportError(VIR_ERR_INVALID_ARG,
-                   _("no stats found for device %s"), dev_name);
+        if (STRPREFIX(dev_name, QEMU_DRIVE_HOST_PREFIX))
+            dev_name += strlen(QEMU_DRIVE_HOST_PREFIX);
 
- cleanup:
-    VIR_FREE(info);
-    return ret;
-}
+        if (!(values = virStringSplit(line, " ", 0)))
+            goto cleanup;
 
-int qemuMonitorTextGetBlockStatsParamsNumber(qemuMonitorPtr mon,
-                                             int *nparams)
-{
-    char *info = NULL;
-    int ret = -1;
-    int num = 0;
-    const char *p, *eol;
+        nstats = 0;
 
-    if (qemuMonitorHMPCommand(mon, "info blockstats", &info) < 0)
-        goto cleanup;
+        for (j = 0; values[j] && *values[j]; j++) {
+            key = values[j];
 
-    /* If the command isn't supported then qemu prints the supported
-     * info commands, so the output starts "info ".  Since this is
-     * unlikely to be the name of a block device, we can use this
-     * to detect if qemu supports the command.
-     */
-    if (strstr(info, "\ninfo ")) {
-        virReportError(VIR_ERR_OPERATION_INVALID,
-                       "%s",
-                       _("'info blockstats' not supported by this qemu"));
-        goto cleanup;
-    }
+            if (!(value = strchr(key, '='))) {
+                virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                               _("info blockstats entry was malformed"));
+                goto cleanup;
+            }
 
-    /* The output format for both qemu & KVM is:
-     *   blockdevice: rd_bytes=% wr_bytes=% rd_operations=% wr_operations=%
-     *   (repeated for each block device)
-     * where '%' is a 64 bit number.
-     */
-    p = info;
+            *value = '\0';
+            value++;
 
-    eol = strchr(p, '\n');
-    if (!eol)
-        eol = p + strlen(p);
+#define QEMU_MONITOR_TEXT_READ_BLOCK_STAT(NAME, VAR)                           \
+            if (STREQ(key, NAME)) {                                            \
+                nstats++;                                                      \
+                if (virStrToLong_ll(value, NULL, 10, &VAR) < 0) {              \
+                    virReportError(VIR_ERR_INTERNAL_ERROR,                     \
+                                   _("'info blockstats' contains malformed "   \
+                                     "parameter '%s' value '%s'"), NAME, value);\
+                    goto cleanup;                                              \
+                }                                                              \
+                continue;                                                      \
+            }
 
-    /* Skip the device name and following ":", and spaces (e.g.
-     * "floppy0: ")
-     */
-    p = strchr(p, ' ');
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("rd_bytes", stats->rd_bytes);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("wr_bytes", stats->wr_bytes);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("rd_operations", stats->rd_req);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("wr_operations", stats->wr_req);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("rd_total_time_ns", stats->rd_total_times);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("wr_total_time_ns", stats->wr_total_times);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("flush_operations", stats->flush_req);
+            QEMU_MONITOR_TEXT_READ_BLOCK_STAT("flush_total_time_ns", stats->flush_total_times);
+#undef QEMU_MONITOR_TEXT_READ_BLOCK_STAT
 
-    while (p && p < eol) {
-        if (STRPREFIX(p, " rd_bytes=") ||
-            STRPREFIX(p, " wr_bytes=") ||
-            STRPREFIX(p, " rd_operations=") ||
-            STRPREFIX(p, " wr_operations=") ||
-            STRPREFIX(p, " rd_total_time_ns=") ||
-            STRPREFIX(p, " wr_total_time_ns=") ||
-            STRPREFIX(p, " flush_operations=") ||
-            STRPREFIX(p, " flush_total_time_ns=")) {
-            num++;
-        } else {
-            VIR_DEBUG("unknown block stat near %s", p);
+            /* log if we get statistic element different from the above */
+            VIR_DEBUG("unknown block stat field '%s'", key);
         }
 
-        /* Skip to next label. */
-        p = strchr(p + 1, ' ');
+        if (nstats > maxstats)
+            maxstats = nstats;
+
+        if (virHashAddEntry(hash, dev_name, stats) < 0)
+            goto cleanup;
+        stats = NULL;
+
+        virStringFreeList(values);
+        values = NULL;
     }
 
-    *nparams = num;
-    ret = 0;
+    ret = maxstats;
 
  cleanup:
+    virStringFreeList(lines);
+    virStringFreeList(values);
+    VIR_FREE(stats);
     VIR_FREE(info);
     return ret;
-}
-
-int qemuMonitorTextGetBlockExtent(qemuMonitorPtr mon ATTRIBUTE_UNUSED,
-                                  const char *dev_name ATTRIBUTE_UNUSED,
-                                  unsigned long long *extent ATTRIBUTE_UNUSED)
-{
-    virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
-                   _("unable to query block extent with this QEMU"));
-    return -1;
 }
 
 /* Return 0 on success, -1 on failure, or -2 if not supported.  Size
@@ -1178,12 +1100,10 @@ int qemuMonitorTextExpirePassword(qemuMonitorPtr mon,
     return ret;
 }
 
-/*
- * Returns: 0 if balloon not supported, +1 if balloon adjust worked
- * or -1 on failure
- */
-int qemuMonitorTextSetBalloon(qemuMonitorPtr mon,
-                              unsigned long newmem)
+
+int
+qemuMonitorTextSetBalloon(qemuMonitorPtr mon,
+                          unsigned long long newmem)
 {
     char *cmd;
     char *reply = NULL;
@@ -1193,7 +1113,7 @@ int qemuMonitorTextSetBalloon(qemuMonitorPtr mon,
      * 'newmem' is in KB, QEMU monitor works in MB, and we all wish
      * we just worked in bytes with unsigned long long everywhere.
      */
-    if (virAsprintf(&cmd, "balloon %lu", VIR_DIV_UP(newmem, 1024)) < 0)
+    if (virAsprintf(&cmd, "balloon %llu", VIR_DIV_UP(newmem, 1024)) < 0)
         return -1;
 
     if (qemuMonitorHMPCommand(mon, cmd, &reply) < 0) {
@@ -1216,10 +1136,6 @@ int qemuMonitorTextSetBalloon(qemuMonitorPtr mon,
 }
 
 
-/*
- * Returns: 0 if CPU hotplug not supported, +1 if CPU hotplug worked
- * or -1 on failure
- */
 int qemuMonitorTextSetCPU(qemuMonitorPtr mon, int cpu, bool online)
 {
     char *cmd;
@@ -1229,26 +1145,35 @@ int qemuMonitorTextSetCPU(qemuMonitorPtr mon, int cpu, bool online)
     if (virAsprintf(&cmd, "cpu_set %d %s", cpu, online ? "online" : "offline") < 0)
         return -1;
 
-    if (qemuMonitorHMPCommand(mon, cmd, &reply) < 0) {
-        VIR_FREE(cmd);
-        return -1;
-    }
-    VIR_FREE(cmd);
+    if (qemuMonitorHMPCommand(mon, cmd, &reply) < 0)
+        goto cleanup;
 
     /* If the command failed qemu prints: 'unknown command'
      * No message is printed on success it seems */
     if (strstr(reply, "unknown command:")) {
-        /* Don't set error - it is expected CPU onlining fails on many qemu - caller will handle */
-        ret = 0;
-    } else {
-        ret = 1;
+        virReportError(VIR_ERR_INTERNAL_ERROR, "%s",
+                       _("cannot change vcpu count of this domain"));
+        goto cleanup;
     }
 
+    ret = 0;
+
+ cleanup:
     VIR_FREE(reply);
+    VIR_FREE(cmd);
+
     return ret;
 }
 
 
+/**
+ * Run HMP command to eject a media from ejectable device.
+ *
+ * Returns:
+ *      -2 on error, when the tray is locked
+ *      -1 on all other errors
+ *      0 on success
+ */
 int qemuMonitorTextEjectMedia(qemuMonitorPtr mon,
                               const char *dev_name,
                               bool force)
@@ -1267,6 +1192,8 @@ int qemuMonitorTextEjectMedia(qemuMonitorPtr mon,
      * device not found, device is locked ...
      * No message is printed on success it seems */
     if (c_strcasestr(reply, "device ")) {
+        if (c_strcasestr(reply, "is locked"))
+            ret = -2;
         virReportError(VIR_ERR_OPERATION_FAILED,
                        _("could not eject media on %s: %s"), dev_name, reply);
         goto cleanup;
@@ -1426,15 +1353,24 @@ int qemuMonitorTextSetMigrationDowntime(qemuMonitorPtr mon,
 #define MIGRATION_DISK_REMAINING_PREFIX "remaining disk: "
 #define MIGRATION_DISK_TOTAL_PREFIX "total disk: "
 
-int qemuMonitorTextGetMigrationStatus(qemuMonitorPtr mon,
-                                      qemuMonitorMigrationStatusPtr status)
+#define CHECKPOINT_SIZE_PREFIX "checkpoint size min/max/avg (MiB):"
+#define CHECKPOINT_LENGTH_PREFIX "checkpoint length min/max/avg (ms):"
+#define CHECKPOINT_PAUSE_PREFIX "checkpoint paused min/max/avg (ms):"
+#define CHECKPOINT_COUNT_PREFIX "checkpoint count:"
+#define CHECKPOINT_PROXY_DISCOMPARE "proxy discompare count:"
+
+int qemuMonitorTextGetMigrationStats(qemuMonitorPtr mon,
+                                     qemuMonitorMigrationStatsPtr stats)
 {
     char *reply;
     char *tmp;
     char *end;
+    char ** checkpoint_length = NULL;
+    char ** checkpoint_pause = NULL;
+    char ** checkpoint_size = NULL;
     int ret = -1;
 
-    memset(status, 0, sizeof(*status));
+    memset(stats, 0, sizeof(*stats));
 
     if (qemuMonitorHMPCommand(mon, "info migrate", &reply) < 0)
         return -1;
@@ -1449,14 +1385,15 @@ int qemuMonitorTextGetMigrationStatus(qemuMonitorPtr mon,
         }
         *end = '\0';
 
-        status->status = qemuMonitorMigrationStatusTypeFromString(tmp);
-        if (status->status < 0) {
+        stats->status = qemuMonitorMigrationStatusTypeFromString(tmp);
+        if (stats->status < 0) {
             virReportError(VIR_ERR_INTERNAL_ERROR,
                            _("unexpected migration status in %s"), reply);
             goto cleanup;
         }
 
-        if (status->status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE) {
+        if (stats->status == QEMU_MONITOR_MIGRATION_STATUS_ACTIVE ||
+            stats->status == QEMU_MONITOR_MIGRATION_STATUS_COLO) {
             tmp = end + 1;
 
             if (!(tmp = strstr(tmp, MIGRATION_TRANSFER_PREFIX)))
@@ -1464,82 +1401,178 @@ int qemuMonitorTextGetMigrationStatus(qemuMonitorPtr mon,
             tmp += strlen(MIGRATION_TRANSFER_PREFIX);
 
             if (virStrToLong_ull(tmp, &end, 10,
-                                 &status->ram_transferred) < 0) {
+                                 &stats->ram_transferred) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse migration data transferred "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
-            status->ram_transferred *= 1024;
+            stats->ram_transferred *= 1024;
             tmp = end;
 
             if (!(tmp = strstr(tmp, MIGRATION_REMAINING_PREFIX)))
                 goto done;
             tmp += strlen(MIGRATION_REMAINING_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->ram_remaining) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->ram_remaining) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse migration data remaining "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
-            status->ram_remaining *= 1024;
+            stats->ram_remaining *= 1024;
             tmp = end;
 
             if (!(tmp = strstr(tmp, MIGRATION_TOTAL_PREFIX)))
                 goto done;
             tmp += strlen(MIGRATION_TOTAL_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->ram_total) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->ram_total) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse migration data total "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
-            status->ram_total *= 1024;
+            stats->ram_total *= 1024;
             tmp = end;
 
             /*
-             * Check for Optional Disk Migration status
+             * Check for Optional Disk Migration stats
              */
             if (!(tmp = strstr(tmp, MIGRATION_DISK_TRANSFER_PREFIX)))
                 goto done;
             tmp += strlen(MIGRATION_DISK_TRANSFER_PREFIX);
 
             if (virStrToLong_ull(tmp, &end, 10,
-                                 &status->disk_transferred) < 0) {
+                                 &stats->disk_transferred) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse disk migration data "
                                  "transferred statistic %s"), tmp);
                 goto cleanup;
             }
-            status->disk_transferred *= 1024;
+            stats->disk_transferred *= 1024;
             tmp = end;
 
             if (!(tmp = strstr(tmp, MIGRATION_DISK_REMAINING_PREFIX)))
                 goto done;
             tmp += strlen(MIGRATION_DISK_REMAINING_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->disk_remaining) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->disk_remaining) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse disk migration data remaining "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
-            status->disk_remaining *= 1024;
+            stats->disk_remaining *= 1024;
             tmp = end;
 
             if (!(tmp = strstr(tmp, MIGRATION_DISK_TOTAL_PREFIX)))
                 goto done;
             tmp += strlen(MIGRATION_DISK_TOTAL_PREFIX);
 
-            if (virStrToLong_ull(tmp, &end, 10, &status->disk_total) < 0) {
+            if (virStrToLong_ull(tmp, &end, 10, &stats->disk_total) < 0) {
                 virReportError(VIR_ERR_INTERNAL_ERROR,
                                _("cannot parse disk migration data total "
                                  "statistic %s"), tmp);
                 goto cleanup;
             }
-            status->disk_total *= 1024;
+            stats->disk_total *= 1024;
+
+
+            /*
+             * Check for COLO migration stats
+             */
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_LENGTH_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_LENGTH_PREFIX);
+
+            // checkpoint length info has the format: min/max/avg
+            if (!(checkpoint_length = virStringSplit(tmp,"/",3))) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint length time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            if (virStrToDouble(checkpoint_length[3], &end,
+                                 &stats->chkpt_length) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint length time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_PAUSE_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_PAUSE_PREFIX);
+
+            // checkpoint pause info has the format: min/max/avg
+            if (!(checkpoint_pause = virStringSplit(tmp,"/",3))) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint pause time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            if (virStrToDouble(checkpoint_pause[3], &end,
+                                 &stats->chkpt_pause) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint pause time "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            tmp = end;
+
+            if (!(tmp = strstr(tmp, CHECKPOINT_SIZE_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_SIZE_PREFIX);
+
+            // checkpoint size info has the format: min/max/avg
+            if (!(checkpoint_size= virStringSplit(tmp,"/",3))) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint size "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+
+            if (virStrToDouble(checkpoint_size[3], &end,
+                                 &stats->chkpt_size) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint size "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            tmp = end;
+            if (!(tmp = strstr(tmp, CHECKPOINT_COUNT_PREFIX)))
+                goto done;
+            tmp += strlen(CHECKPOINT_COUNT_PREFIX);
+
+            if (virStrToLong_ull(tmp, &end, 10, &stats->chkpt_count) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse checkpoint count "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
+            tmp = end;
+            if (!(tmp = strstr(tmp, CHECKPOINT_PROXY_DISCOMPARE)))
+                goto done;
+            tmp += strlen(CHECKPOINT_PROXY_DISCOMPARE);
+
+            if (virStrToLong_ull(tmp, &end, 10, &stats->chkpt_proxy_discompare) < 0) {
+                virReportError(VIR_ERR_INTERNAL_ERROR,
+                               _("cannot parse proxy discompare count "
+                                 "statistic %s"), tmp);
+                goto cleanup;
+            }
+
         }
     }
 
@@ -1548,8 +1581,12 @@ int qemuMonitorTextGetMigrationStatus(qemuMonitorPtr mon,
 
  cleanup:
     VIR_FREE(reply);
+    virStringFreeList(checkpoint_length);
+    virStringFreeList(checkpoint_pause);
+    virStringFreeList(checkpoint_size);
+
     if (ret < 0)
-        memset(status, 0, sizeof(*status));
+        memset(stats, 0, sizeof(*stats));
     return ret;
 }
 
@@ -2656,7 +2693,7 @@ int qemuMonitorTextDriveDel(qemuMonitorPtr mon,
 
     /* (qemu) drive_del wark
      * Device 'wark' not found */
-    } else if (STRPREFIX(reply, "Device '") && (strstr(reply, "not found"))) {
+    } else if (strstr(reply, "Device '") && strstr(reply, "not found")) {
         /* NB: device not found errors mean the drive was auto-deleted and we
          * ignore the error */
     } else if (STRNEQ(reply, "")) {
@@ -2713,7 +2750,10 @@ int qemuMonitorTextSetDrivePassphrase(qemuMonitorPtr mon,
     return ret;
 }
 
-int qemuMonitorTextCreateSnapshot(qemuMonitorPtr mon, const char *name)
+
+int
+qemuMonitorTextCreateSnapshot(qemuMonitorPtr mon,
+                              const char *name)
 {
     char *cmd = NULL;
     char *reply = NULL;
@@ -2727,20 +2767,16 @@ int qemuMonitorTextCreateSnapshot(qemuMonitorPtr mon, const char *name)
     if (qemuMonitorHMPCommand(mon, cmd, &reply))
         goto cleanup;
 
-    if (strstr(reply, "Error while creating snapshot") != NULL) {
+    if (strstr(reply, "Error while creating snapshot") ||
+        strstr(reply, "Could not open VM state file") ||
+        strstr(reply, "State blocked by non-migratable device") ||
+        (strstr(reply, "Error") && strstr(reply, "while writing VM"))) {
         virReportError(VIR_ERR_OPERATION_FAILED,
                        _("Failed to take snapshot: %s"), reply);
         goto cleanup;
-    } else if (strstr(reply, "No block device can accept snapshots") != NULL) {
+    } else if (strstr(reply, "No block device can accept snapshots")) {
         virReportError(VIR_ERR_OPERATION_INVALID, "%s",
                        _("this domain does not have a device to take snapshots"));
-        goto cleanup;
-    } else if (strstr(reply, "Could not open VM state file") != NULL) {
-        virReportError(VIR_ERR_OPERATION_FAILED, "%s", reply);
-        goto cleanup;
-    } else if (strstr(reply, "Error") != NULL
-             && strstr(reply, "while writing VM") != NULL) {
-        virReportError(VIR_ERR_OPERATION_FAILED, "%s", reply);
         goto cleanup;
     }
 

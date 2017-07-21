@@ -34,12 +34,11 @@
     </disk>
     <disk type='file' device='disk'>
       <source file='/tmp/idedisk.img'/>
-      <target dev='hdc' bus='ide'/>
+      <target dev='hdd' bus='ide'/>
       <address type='drive' controller='0' bus='0' target='0' unit='2'/>
     </disk>
     <controller type='usb' index='0'/>
     <controller type='ide' index='0'/>
-    <controller type='ide' index='1'/>
     <controller type='pci' index='0' model='pci-root'/>
     <memballoon model='virtio'/>
   </devices>

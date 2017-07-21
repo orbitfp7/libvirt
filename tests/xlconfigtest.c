@@ -46,10 +46,8 @@ static virDomainXMLOptionPtr xmlopt;
  * parses the xml, creates a domain def and compare with equivalent xm config
  */
 static int
-testCompareParseXML(const char *xmcfg, const char *xml, int xendConfigVersion)
+testCompareParseXML(const char *xmcfg, const char *xml)
 {
-    char *xmlData = NULL;
-    char *xmcfgData = NULL;
     char *gotxmcfgData = NULL;
     virConfPtr conf = NULL;
     virConnectPtr conn = NULL;
@@ -63,15 +61,8 @@ testCompareParseXML(const char *xmcfg, const char *xml, int xendConfigVersion)
     conn = virGetConnect();
     if (!conn) goto fail;
 
-    if (virtTestLoadFile(xml, &xmlData) < 0)
-        goto fail;
-
-    if (virtTestLoadFile(xmcfg, &xmcfgData) < 0)
-        goto fail;
-
-    if (!(def = virDomainDefParseString(xmlData, caps, xmlopt,
-                                        1 << VIR_DOMAIN_VIRT_XEN,
-                                        VIR_DOMAIN_XML_INACTIVE)))
+    if (!(def = virDomainDefParseFile(xml, caps, xmlopt,
+                                      VIR_DOMAIN_XML_INACTIVE)))
         goto fail;
 
     if (!virDomainDefCheckABIStability(def, def)) {
@@ -79,23 +70,19 @@ testCompareParseXML(const char *xmcfg, const char *xml, int xendConfigVersion)
         goto fail;
     }
 
-    if (!(conf = xenFormatXL(def, conn,  xendConfigVersion)))
+    if (!(conf = xenFormatXL(def, conn)))
         goto fail;
 
     if (virConfWriteMem(gotxmcfgData, &wrote, conf) < 0)
         goto fail;
     gotxmcfgData[wrote] = '\0';
 
-    if (STRNEQ(xmcfgData, gotxmcfgData)) {
-        virtTestDifference(stderr, xmcfgData, gotxmcfgData);
+    if (virtTestCompareToFile(gotxmcfgData, xmcfg) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
-    VIR_FREE(xmlData);
-    VIR_FREE(xmcfgData);
     VIR_FREE(gotxmcfgData);
     if (conf)
         virConfFree(conf);
@@ -108,9 +95,8 @@ testCompareParseXML(const char *xmcfg, const char *xml, int xendConfigVersion)
  * parses the xl config, develops domain def and compares with equivalent xm config
  */
 static int
-testCompareFormatXML(const char *xmcfg, const char *xml, int xendConfigVersion)
+testCompareFormatXML(const char *xmcfg, const char *xml)
 {
-    char *xmlData = NULL;
     char *xmcfgData = NULL;
     char *gotxml = NULL;
     virConfPtr conf = NULL;
@@ -121,33 +107,27 @@ testCompareFormatXML(const char *xmcfg, const char *xml, int xendConfigVersion)
     conn = virGetConnect();
     if (!conn) goto fail;
 
-    if (virtTestLoadFile(xml, &xmlData) < 0)
-        goto fail;
-
     if (virtTestLoadFile(xmcfg, &xmcfgData) < 0)
         goto fail;
 
     if (!(conf = virConfReadMem(xmcfgData, strlen(xmcfgData), 0)))
         goto fail;
 
-    if (!(def = xenParseXL(conf, caps, xendConfigVersion)))
+    if (!(def = xenParseXL(conf, caps, xmlopt)))
         goto fail;
 
-    if (!(gotxml = virDomainDefFormat(def, VIR_DOMAIN_XML_INACTIVE |
+    if (!(gotxml = virDomainDefFormat(def, caps, VIR_DOMAIN_XML_INACTIVE |
                                       VIR_DOMAIN_XML_SECURE)))
         goto fail;
 
-    if (STRNEQ(xmlData, gotxml)) {
-        virtTestDifference(stderr, xmlData, gotxml);
+    if (virtTestCompareToFile(gotxml, xml) < 0)
         goto fail;
-    }
 
     ret = 0;
 
  fail:
     if (conf)
         virConfFree(conf);
-    VIR_FREE(xmlData);
     VIR_FREE(xmcfgData);
     VIR_FREE(gotxml);
     virDomainDefFree(def);
@@ -159,7 +139,6 @@ testCompareFormatXML(const char *xmcfg, const char *xml, int xendConfigVersion)
 
 struct testInfo {
     const char *name;
-    int version;
     int mode;
 };
 
@@ -178,9 +157,9 @@ testCompareHelper(const void *data)
         goto cleanup;
 
     if (info->mode == 0)
-        result = testCompareParseXML(cfg, xml, info->version);
+        result = testCompareParseXML(cfg, xml);
     else
-        result = testCompareFormatXML(cfg, xml, info->version);
+        result = testCompareFormatXML(cfg, xml);
 
  cleanup:
     VIR_FREE(xml);
@@ -201,20 +180,46 @@ mymain(void)
     if (!(xmlopt = libxlCreateXMLConf()))
         return EXIT_FAILURE;
 
-#define DO_TEST(name, version)                                          \
+#define DO_TEST_PARSE(name)                                             \
     do {                                                                \
-        struct testInfo info0 = { name, version, 0 };                   \
-        struct testInfo info1 = { name, version, 1 };                   \
-        if (virtTestRun("Xen XM-2-XML Parse  " name,                    \
+        struct testInfo info0 = { name, 0 };                            \
+        if (virtTestRun("Xen XL-2-XML Parse  " name,                    \
                         testCompareHelper, &info0) < 0)                 \
             ret = -1;                                                   \
-        if (virtTestRun("Xen XM-2-XML Format " name,                    \
+    } while (0)
+
+#define DO_TEST_FORMAT(name)                                            \
+    do {                                                                \
+        struct testInfo info1 = { name, 1 };                            \
+        if (virtTestRun("Xen XL-2-XML Format " name,                    \
                         testCompareHelper, &info1) < 0)                 \
             ret = -1;                                                   \
     } while (0)
 
-    DO_TEST("new-disk", 3);
-    DO_TEST("spice", 3);
+#define DO_TEST(name)                                                   \
+    do {                                                                \
+        DO_TEST_PARSE(name);                                            \
+        DO_TEST_FORMAT(name);                                           \
+    } while (0)
+
+    DO_TEST("paravirt-maxvcpus");
+    DO_TEST("new-disk");
+    DO_TEST("spice");
+    DO_TEST("spice-features");
+    DO_TEST("vif-rate");
+
+    DO_TEST("paravirt-cmdline");
+    DO_TEST_FORMAT("paravirt-cmdline-extra-root");
+    DO_TEST_FORMAT("paravirt-cmdline-bogus-extra-root");
+
+#ifdef LIBXL_HAVE_BUILDINFO_USBDEVICE_LIST
+    DO_TEST("fullvirt-multiusb");
+#endif
+#ifdef LIBXL_HAVE_BUILDINFO_KERNEL
+    DO_TEST("fullvirt-direct-kernel-boot");
+    DO_TEST_FORMAT("fullvirt-direct-kernel-boot-extra");
+    DO_TEST_FORMAT("fullvirt-direct-kernel-boot-bogus-extra");
+#endif
 
     virObjectUnref(caps);
     virObjectUnref(xmlopt);

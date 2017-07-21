@@ -1,7 +1,7 @@
 /*
  * datatypes.c: management of structs for public data types
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -59,6 +59,12 @@ static void virStreamDispose(void *obj);
 static void virStorageVolDispose(void *obj);
 static void virStoragePoolDispose(void *obj);
 
+virClassPtr virAdmConnectClass;
+virClassPtr virAdmConnectCloseCallbackDataClass;
+
+static void virAdmConnectDispose(void *obj);
+static void virAdmConnectCloseCallbackDataDispose(void *obj);
+
 static int
 virDataTypesOnceInit(void)
 {
@@ -73,7 +79,7 @@ virDataTypesOnceInit(void)
 #define DECLARE_CLASS_LOCKABLE(basename)                         \
     DECLARE_CLASS_COMMON(basename, virClassForObjectLockable())
 
-    DECLARE_CLASS(virConnect);
+    DECLARE_CLASS_LOCKABLE(virConnect);
     DECLARE_CLASS_LOCKABLE(virConnectCloseCallbackData);
     DECLARE_CLASS(virDomain);
     DECLARE_CLASS(virDomainSnapshot);
@@ -85,6 +91,9 @@ virDataTypesOnceInit(void)
     DECLARE_CLASS(virStream);
     DECLARE_CLASS(virStorageVol);
     DECLARE_CLASS(virStoragePool);
+
+    DECLARE_CLASS_LOCKABLE(virAdmConnect);
+    DECLARE_CLASS_LOCKABLE(virAdmConnectCloseCallbackData);
 
 #undef DECLARE_CLASS_COMMON
 #undef DECLARE_CLASS_LOCKABLE
@@ -110,13 +119,10 @@ virGetConnect(void)
     if (virDataTypesInitialize() < 0)
         return NULL;
 
-    if (!(ret = virObjectNew(virConnectClass)))
+    if (!(ret = virObjectLockableNew(virConnectClass)))
         return NULL;
 
-    if (!(ret->closeCallback = virObjectNew(virConnectCloseCallbackDataClass)))
-        goto error;
-
-    if (virMutexInit(&ret->lock) < 0)
+    if (!(ret->closeCallback = virObjectLockableNew(virConnectCloseCallbackDataClass)))
         goto error;
 
     return ret;
@@ -141,8 +147,6 @@ virConnectDispose(void *obj)
     if (conn->driver)
         conn->driver->connectClose(conn);
 
-    virMutexLock(&conn->lock);
-
     virResetError(&conn->err);
 
     virURIFree(conn->uri);
@@ -154,9 +158,6 @@ virConnectDispose(void *obj)
 
         virObjectUnref(conn->closeCallback);
     }
-
-    virMutexUnlock(&conn->lock);
-    virMutexDestroy(&conn->lock);
 }
 
 
@@ -377,7 +378,7 @@ virInterfaceDispose(void *obj)
  * @name: pointer to the storage pool name
  * @uuid: pointer to the uuid
  * @privateData: pointer to driver specific private data
- * @freeFunc: private data cleanup function pointer specfic to driver
+ * @freeFunc: private data cleanup function pointer specific to driver
  *
  * Allocates a new storage pool object. When the object is no longer needed,
  * virObjectUnref() must be called in order to not leak data.
@@ -453,7 +454,7 @@ virStoragePoolDispose(void *obj)
  * @name: pointer to the storage vol name
  * @key: pointer to unique key of the volume
  * @privateData: pointer to driver specific private data
- * @freeFunc: private data cleanup function pointer specfic to driver
+ * @freeFunc: private data cleanup function pointer specific to driver
  *
  * Allocates a new storage volume object. When the object is no longer needed,
  * virObjectUnref() must be called in order to not leak data.
@@ -810,4 +811,51 @@ virDomainSnapshotDispose(void *obj)
 
     VIR_FREE(snapshot->name);
     virObjectUnref(snapshot->domain);
+}
+
+
+virAdmConnectPtr
+virAdmConnectNew(void)
+{
+    virAdmConnectPtr ret;
+
+    if (virDataTypesInitialize() < 0)
+        return NULL;
+
+    if (!(ret = virObjectLockableNew(virAdmConnectClass)))
+        return NULL;
+
+    if (!(ret->closeCallback = virObjectLockableNew(virAdmConnectCloseCallbackDataClass)))
+        goto error;
+
+    return ret;
+
+ error:
+    virObjectUnref(ret);
+    return NULL;
+}
+
+static void
+virAdmConnectDispose(void *obj)
+{
+    virAdmConnectPtr conn = obj;
+
+    if (conn->privateDataFreeFunc)
+        conn->privateDataFreeFunc(conn);
+
+    virURIFree(conn->uri);
+    virObjectUnref(conn->closeCallback);
+}
+
+static void
+virAdmConnectCloseCallbackDataDispose(void *obj)
+{
+    virAdmConnectCloseCallbackDataPtr cb_data = obj;
+
+    virObjectLock(cb_data);
+
+    if (cb_data->freeCallback)
+        cb_data->freeCallback(cb_data->opaque);
+
+    virObjectUnlock(cb_data);
 }

@@ -536,13 +536,14 @@ virJSONValuePtr virNetServerClientPreExecRestart(virNetServerClientPtr client)
         goto error;
     }
 
-    if (client->privateData && client->privateDataPreExecRestart &&
-        !(child = client->privateDataPreExecRestart(client, client->privateData)))
-        goto error;
+    if (client->privateData && client->privateDataPreExecRestart) {
+        if (!(child = client->privateDataPreExecRestart(client, client->privateData)))
+            goto error;
 
-    if (virJSONValueObjectAppend(object, "privateData", child) < 0) {
-        virJSONValueFree(child);
-        goto error;
+        if (virJSONValueObjectAppend(object, "privateData", child) < 0) {
+            virJSONValueFree(child);
+            goto error;
+        }
     }
 
     virObjectUnlock(client);
@@ -721,7 +722,7 @@ virNetServerClientCreateIdentity(virNetServerClientPtr client)
 
  error:
     virObjectUnref(ret);
-    ret = 0;
+    ret = NULL;
     goto cleanup;
 }
 
@@ -850,11 +851,11 @@ void virNetServerClientDispose(void *obj)
     PROBE(RPC_SERVER_CLIENT_DISPOSE,
           "client=%p", client);
 
-    virObjectUnref(client->identity);
-
     if (client->privateData &&
         client->privateDataFreeFunc)
         client->privateDataFreeFunc(client->privateData);
+
+    virObjectUnref(client->identity);
 
 #if WITH_SASL
     virObjectUnref(client->sasl);
@@ -866,7 +867,6 @@ void virNetServerClientDispose(void *obj)
     virObjectUnref(client->tlsCtxt);
 #endif
     virObjectUnref(client->sock);
-    virObjectUnlock(client);
 }
 
 
@@ -1107,36 +1107,38 @@ static void virNetServerClientDispatchRead(virNetServerClientPtr client)
 
         /* Now figure out if we need to read more data to get some
          * file descriptors */
-        if (msg->header.type == VIR_NET_CALL_WITH_FDS &&
-            virNetMessageDecodeNumFDs(msg) < 0) {
-            virNetMessageQueueServe(&client->rx);
-            virNetMessageFree(msg);
-            client->wantClose = true;
-            return; /* Error */
-        }
-
-        /* Try getting the file descriptors (may fail if blocking) */
-        for (i = msg->donefds; i < msg->nfds; i++) {
-            int rv;
-            if ((rv = virNetSocketRecvFD(client->sock, &(msg->fds[i]))) < 0) {
+        if (msg->header.type == VIR_NET_CALL_WITH_FDS) {
+            if (msg->nfds == 0 &&
+                virNetMessageDecodeNumFDs(msg) < 0) {
                 virNetMessageQueueServe(&client->rx);
                 virNetMessageFree(msg);
                 client->wantClose = true;
+                return; /* Error */
+            }
+
+            /* Try getting the file descriptors (may fail if blocking) */
+            for (i = msg->donefds; i < msg->nfds; i++) {
+                int rv;
+                if ((rv = virNetSocketRecvFD(client->sock, &(msg->fds[i]))) < 0) {
+                    virNetMessageQueueServe(&client->rx);
+                    virNetMessageFree(msg);
+                    client->wantClose = true;
+                    return;
+                }
+                if (rv == 0) /* Blocking */
+                    break;
+                msg->donefds++;
+            }
+
+            /* Need to poll() until FDs arrive */
+            if (msg->donefds < msg->nfds) {
+                /* Because DecodeHeader/NumFDs reset bufferOffset, we
+                 * put it back to what it was, so everything works
+                 * again next time we run this method
+                 */
+                client->rx->bufferOffset = client->rx->bufferLength;
                 return;
             }
-            if (rv == 0) /* Blocking */
-                break;
-            msg->donefds++;
-        }
-
-        /* Need to poll() until FDs arrive */
-        if (msg->donefds < msg->nfds) {
-            /* Because DecodeHeader/NumFDs reset bufferOffset, we
-             * put it back to what it was, so everything works
-             * again next time we run this method
-             */
-            client->rx->bufferOffset = client->rx->bufferLength;
-            return;
         }
 
         /* Definitely finished reading, so remove from queue */

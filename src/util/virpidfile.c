@@ -45,12 +45,19 @@ VIR_LOG_INIT("util.pidfile");
 
 char *virPidFileBuildPath(const char *dir, const char* name)
 {
-    char *pidfile;
+    virBuffer buf = VIR_BUFFER_INITIALIZER;
 
-    if (virAsprintf(&pidfile, "%s/%s.pid", dir, name) < 0)
-        return NULL;
+    virBufferAsprintf(&buf, "%s", dir);
+    virBufferEscapeString(&buf, "/%s.pid", name);
 
-    return pidfile;
+    if (virBufferCheckError(&buf) < 0)
+        goto error;
+
+    return virBufferContentAndReset(&buf);
+
+ error:
+    virBufferFreeAndReset(&buf);
+    return NULL;
 }
 
 
@@ -556,11 +563,8 @@ virPidFileConstructPath(bool privileged,
             goto cleanup;
         }
 
-        if (virAsprintf(pidfile, "%s/%s.pid", rundir, progname) < 0) {
-            VIR_FREE(rundir);
+        if (virAsprintf(pidfile, "%s/%s.pid", rundir, progname) < 0)
             goto cleanup;
-        }
-
     }
 
     ret = 0;

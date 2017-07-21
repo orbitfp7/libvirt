@@ -60,8 +60,8 @@ virStorageBackendMpathNewVol(virStoragePoolObjPtr pool,
     if (virAsprintf(&vol->target.path, "/dev/%s", dev) < 0)
         goto cleanup;
 
-    if (virStorageBackendUpdateVolInfo(vol, true, true,
-                                       VIR_STORAGE_VOL_OPEN_DEFAULT) < 0) {
+    if (virStorageBackendUpdateVolInfo(vol, true,
+                                       VIR_STORAGE_VOL_OPEN_DEFAULT, 0) < 0) {
         goto cleanup;
     }
 
@@ -245,11 +245,11 @@ virStorageBackendGetMaps(virStoragePoolObjPtr pool)
 }
 
 static int
-virStorageBackendMpathCheckPool(virConnectPtr conn ATTRIBUTE_UNUSED,
-                                virStoragePoolObjPtr pool ATTRIBUTE_UNUSED,
+virStorageBackendMpathCheckPool(virStoragePoolObjPtr pool ATTRIBUTE_UNUSED,
                                 bool *isActive)
 {
-    *isActive = virFileExists("/dev/mpath");
+    *isActive = virFileExists("/dev/mapper") ||
+                virFileExists("/dev/mpath");
     return 0;
 }
 

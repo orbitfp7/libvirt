@@ -63,9 +63,15 @@ VIR_ENUM_IMPL(virStorageFileFormat,
               "cloop", "dmg", "iso",
               "vpc", "vdi",
               /* Not direct file formats, but used for various drivers */
-              "fat", "vhd", "ploop",
+              "fat", "vhd", "ploop", "replication",
               /* Formats with backing file below here */
               "cow", "qcow", "qcow2", "qed", "vmdk")
+
+VIR_ENUM_IMPL(virStorageMode,
+              VIR_STORAGE_MODE_LAST,
+              "none",
+              "primary",
+              "secondary")
 
 VIR_ENUM_IMPL(virStorageFileFeature,
               VIR_STORAGE_FILE_FEATURE_LAST,
@@ -1030,12 +1036,12 @@ virStorageFileGetMetadataFromFD(const char *path,
     }
 
     if (lseek(fd, 0, SEEK_SET) == (off_t)-1) {
-        virReportSystemError(errno, _("cannot seek to start of '%s'"), meta->relPath);
+        virReportSystemError(errno, _("cannot seek to start of '%s'"), meta->path);
         goto cleanup;
     }
 
     if ((len = virFileReadHeaderFD(fd, len, &buf)) < 0) {
-        virReportSystemError(errno, _("cannot read header '%s'"), meta->relPath);
+        virReportSystemError(errno, _("cannot read header '%s'"), meta->path);
         goto cleanup;
     }
 
@@ -1283,7 +1289,7 @@ virStorageFileParseChainIndex(const char *diskTarget,
     if (name && diskTarget)
         strings = virStringSplit(name, "[", 2);
 
-    if (virStringListLength(strings) != 2)
+    if (virStringListLength((const char * const *)strings) != 2)
         goto cleanup;
 
     if (virStrToLong_uip(strings[1], &suffix, 10, &idx) < 0 ||
@@ -1338,6 +1344,15 @@ virStorageFileChainLookup(virStorageSourcePtr chain,
             chain = chain->backingStore;
             i++;
         }
+
+        if (idx && idx < i) {
+            virReportError(VIR_ERR_INVALID_ARG,
+                           _("requested backing store index %u is above '%s' "
+                             "in chain for '%s'"),
+                           idx, NULLSTR(startFrom->path), NULLSTR(start));
+            return NULL;
+        }
+
         *parent = startFrom;
     }
 
@@ -1390,21 +1405,23 @@ virStorageFileChainLookup(virStorageSourcePtr chain,
  error:
     if (idx) {
         virReportError(VIR_ERR_INVALID_ARG,
-                       _("could not find backing store %u in chain for '%s'"),
-                       idx, start);
+                       _("could not find backing store index %u in chain "
+                         "for '%s'"),
+                       idx, NULLSTR(start));
     } else if (name) {
         if (startFrom)
             virReportError(VIR_ERR_INVALID_ARG,
                            _("could not find image '%s' beneath '%s' in "
-                             "chain for '%s'"), name, startFrom->path, start);
+                             "chain for '%s'"), name, NULLSTR(startFrom->path),
+                           NULLSTR(start));
         else
             virReportError(VIR_ERR_INVALID_ARG,
                            _("could not find image '%s' in chain for '%s'"),
-                           name, start);
+                           name, NULLSTR(start));
     } else {
         virReportError(VIR_ERR_INVALID_ARG,
                        _("could not find base image in chain for '%s'"),
-                       start);
+                       NULLSTR(start));
     }
     *parent = NULL;
     return NULL;
@@ -1989,6 +2006,10 @@ virStorageSourceIsEmpty(virStorageSourcePtr src)
     if (src->type == VIR_STORAGE_TYPE_NONE)
         return true;
 
+    if (src->type == VIR_STORAGE_TYPE_NETWORK &&
+        src->protocol == VIR_STORAGE_NET_PROTOCOL_NONE)
+        return true;
+
     return false;
 }
 
@@ -2023,6 +2044,8 @@ virStorageSourceClear(virStorageSourcePtr def)
 
     VIR_FREE(def->path);
     VIR_FREE(def->volume);
+    VIR_FREE(def->snapshot);
+    VIR_FREE(def->configFile);
     virStorageSourcePoolDefFree(def->srcpool);
     VIR_FREE(def->driverName);
     virBitmapFree(def->features);
@@ -2163,9 +2186,16 @@ virStorageSourceParseBackingURI(virStorageSourcePtr src,
 
     if (src->protocol == VIR_STORAGE_NET_PROTOCOL_GLUSTER) {
         char *tmp;
+
+        if (!src->path) {
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED, "%s",
+                           _("missing volume name and path for gluster volume"));
+            goto cleanup;
+        }
+
         if (!(tmp = strchr(src->path, '/')) ||
             tmp == src->path) {
-            virReportError(VIR_ERR_XML_ERROR,
+            virReportError(VIR_ERR_CONFIG_UNSUPPORTED,
                            _("missing volume name or file name in "
                              "gluster source path '%s'"), src->path);
             goto cleanup;
@@ -2220,9 +2250,6 @@ virStorageSourceRBDAddHost(virStorageSourcePtr src,
         *port = '\0';
         port += skip;
         if (VIR_STRDUP(src->hosts[src->nhosts - 1].port, port) < 0)
-            goto error;
-    } else {
-        if (VIR_STRDUP(src->hosts[src->nhosts - 1].port, "6789") < 0)
             goto error;
     }
 
@@ -2563,6 +2590,45 @@ virStorageSourceNewFromBacking(virStorageSourcePtr parent)
 }
 
 
+/**
+ * @src: disk source definiton structure
+ * @report: report libvirt errors if set to true
+ *
+ * Updates src->physical for block devices since qemu doesn't report the current
+ * size correctly for them. Returns 0 on success, -1 on error.
+ */
+int
+virStorageSourceUpdateBlockPhysicalSize(virStorageSourcePtr src,
+                                        bool report)
+{
+    int fd = -1;
+    off_t end;
+    int ret = -1;
+
+    if (virStorageSourceGetActualType(src) != VIR_STORAGE_TYPE_BLOCK)
+        return 0;
+
+    if ((fd = open(src->path, O_RDONLY)) < 0) {
+        if (report)
+            virReportSystemError(errno, _("failed to open block device '%s'"),
+                                 src->path);
+        return -1;
+    }
+
+    if ((end = lseek(fd, 0, SEEK_END)) == (off_t) -1) {
+        if (report)
+            virReportSystemError(errno,
+                                 _("failed to seek to end of '%s'"), src->path);
+    } else {
+        src->physical = end;
+        ret = 0;
+    }
+
+    VIR_FORCE_CLOSE(fd);
+    return ret;
+}
+
+
 static char *
 virStorageFileCanonicalizeFormatPath(char **components,
                                      size_t ncomponents,
@@ -2860,5 +2926,34 @@ virStorageFileGetRelativeBackingPath(virStorageSourcePtr top,
  cleanup:
     VIR_FREE(path);
     VIR_FREE(tmp);
+    return ret;
+}
+
+
+/*
+ * virStorageFileCheckCompat
+ */
+int
+virStorageFileCheckCompat(const char *compat)
+{
+    char **version;
+    unsigned int result;
+    int ret = -1;
+
+    if (!compat)
+        return 0;
+
+    version = virStringSplit(compat, ".", 2);
+    if (!version || !version[1] ||
+        virStrToLong_ui(version[0], NULL, 10, &result) < 0 ||
+        virStrToLong_ui(version[1], NULL, 10, &result) < 0) {
+        virReportError(VIR_ERR_XML_ERROR, "%s",
+                       _("forbidden characters in 'compat' attribute"));
+        goto cleanup;
+    }
+    ret = 0;
+
+ cleanup:
+    virStringFreeList(version);
     return ret;
 }

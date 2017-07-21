@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011, 2013 Red Hat, Inc.
+ * Copyright (C) 2011, 2013, 2016 Red Hat, Inc.
  * Copyright (C) 2010 IBM Corporation
  *
  * This library is free software; you can redistribute it and/or
@@ -46,7 +46,12 @@ typedef enum {
    VIR_NETDEV_MACVLAN_CREATE_WITH_TAP = 1 << 0,
    /* Bring the interface up */
    VIR_NETDEV_MACVLAN_CREATE_IFUP     = 1 << 1,
+   /* Enable VNET_HDR */
+   VIR_NETDEV_MACVLAN_VNET_HDR          = 1 << 2,
 } virNetDevMacVLanCreateFlags;
+
+int virNetDevMacVLanReserveName(const char *name, bool quietfail);
+int virNetDevMacVLanReleaseName(const char *name);
 
 int virNetDevMacVLanCreate(const char *ifname,
                            const char *type,
@@ -64,15 +69,16 @@ int virNetDevMacVLanCreateWithVPortProfile(const char *ifname,
                                            const virMacAddr *macaddress,
                                            const char *linkdev,
                                            virNetDevMacVLanMode mode,
-                                           int vnet_hdr,
                                            const unsigned char *vmuuid,
                                            virNetDevVPortProfilePtr virtPortProfile,
                                            char **res_ifname,
                                            virNetDevVPortProfileOp vmop,
                                            char *stateDir,
+                                           int *tapfd,
+                                           size_t tapfdSize,
                                            unsigned int flags)
-    ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(6)
-    ATTRIBUTE_NONNULL(8) ATTRIBUTE_NONNULL(10) ATTRIBUTE_RETURN_CHECK;
+    ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(5)
+    ATTRIBUTE_NONNULL(7) ATTRIBUTE_NONNULL(9) ATTRIBUTE_RETURN_CHECK;
 
 int virNetDevMacVLanDeleteWithVPortProfile(const char *ifname,
                                            const virMacAddr *macaddress,

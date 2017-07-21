@@ -695,4 +695,38 @@ LIBVIRT_1.2.12 {
         virDomainDefineXMLFlags;
 } LIBVIRT_1.2.11;
 
+LIBVIRT_1.2.14 {
+    global:
+        virDomainIOThreadInfoFree;
+        virDomainGetIOThreadInfo;
+        virDomainPinIOThread;
+        virDomainInterfaceAddresses;
+        virDomainInterfaceFree;
+} LIBVIRT_1.2.12;
+
+LIBVIRT_1.2.15 {
+    global:
+        virDomainAddIOThread;
+        virDomainDelIOThread;
+} LIBVIRT_1.2.14;
+
+LIBVIRT_1.2.16 {
+    global:
+        virDomainSetUserPassword;
+} LIBVIRT_1.2.15;
+
+LIBVIRT_1.2.17 {
+    global:
+        virTypedParamsAddStringList;
+} LIBVIRT_1.2.16;
+
+LIBVIRT_1.2.19 {
+    global:
+        virDomainRename;
+} LIBVIRT_1.2.17;
+
+LIBVIRT_1.3.2 {
+        virDomainMigrateStartPostCopy;
+} LIBVIRT_1.2.19;
+
 # .... define new API here using predicted next version number ....

@@ -13,7 +13,7 @@
 #ifdef WITH_QEMU
 
 # include "internal.h"
-# include "qemu/qemu_command.h"
+# include "qemu/qemu_parse_command.h"
 # include "testutilsqemu.h"
 # include "virstring.h"
 
@@ -64,22 +64,17 @@ static int testCompareXMLToArgvFiles(const char *xml,
             goto fail;
         if (flags & FLAG_EXPECT_WARNING) {
             if (*log) {
-                if (virTestGetDebug() > 1)
-                    fprintf(stderr,
-                            "Got expected warning from "
+                VIR_TEST_DEBUG("Got expected warning from "
                             "qemuParseCommandLineString:\n%s",
                             log);
             } else {
-                if (virTestGetDebug())
-                    fprintf(stderr, "qemuParseCommandLineString "
-                            "should have logged a warning\n");
+                VIR_TEST_DEBUG("qemuParseCommandLineString "
+                        "should have logged a warning\n");
                 goto fail;
             }
         } else { /* didn't expect a warning */
             if (*log) {
-                if (virTestGetDebug())
-                    fprintf(stderr,
-                            "Got unexpected warning from "
+                VIR_TEST_DEBUG("Got unexpected warning from "
                             "qemuParseCommandLineString:\n%s",
                             log);
                 goto fail;
@@ -88,11 +83,11 @@ static int testCompareXMLToArgvFiles(const char *xml,
     }
 
     if (!virDomainDefCheckABIStability(vmdef, vmdef)) {
-        fprintf(stderr, "ABI stability check failed on %s", xml);
+        VIR_TEST_DEBUG("ABI stability check failed on %s", xml);
         goto fail;
     }
 
-    if (!(actualxml = virDomainDefFormat(vmdef, 0)))
+    if (!(actualxml = virDomainDefFormat(vmdef, driver.caps, 0)))
         goto fail;
 
     if (blankProblemElements(expectxml) < 0 ||
@@ -129,9 +124,9 @@ testCompareXMLToArgvHelper(const void *data)
     char *xml = NULL;
     char *args = NULL;
 
-    if (virAsprintf(&xml, "%s/qemuxml2argvdata/qemuxml2argv-%s.xml",
+    if (virAsprintf(&xml, "%s/qemuargv2xmldata/qemuargv2xml-%s.xml",
                     abs_srcdir, info->name) < 0 ||
-        virAsprintf(&args, "%s/qemuxml2argvdata/qemuxml2argv-%s.args",
+        virAsprintf(&args, "%s/qemuargv2xmldata/qemuargv2xml-%s.args",
                     abs_srcdir, info->name) < 0)
         goto cleanup;
 
@@ -150,15 +145,9 @@ mymain(void)
 {
     int ret = 0;
 
-    driver.config = virQEMUDriverConfigNew(false);
-    if (driver.config == NULL)
+    if (qemuTestDriverInit(&driver) < 0)
         return EXIT_FAILURE;
 
-    if ((driver.caps = testQemuCapsInit()) == NULL)
-        return EXIT_FAILURE;
-
-    if (!(driver.xmlopt = virQEMUDriverCreateXMLConf(&driver)))
-        return EXIT_FAILURE;
 
 # define DO_TEST_FULL(name, flags)                                      \
     do {                                                                \
@@ -190,9 +179,6 @@ mymain(void)
     /* This needs <emulator>./qemu.sh</emulator> which doesn't work here.  */
     /*DO_TEST("cpu-kvmclock");*/
 
-    /* Can't roundtrip xenner arch */
-    /*DO_TEST("bootloader");*/
-
     DO_TEST("reboot-timeout-enabled");
     DO_TEST("reboot-timeout-disabled");
 
@@ -207,12 +193,6 @@ mymain(void)
     DO_TEST("disk-drive-boot-disk");
     DO_TEST("disk-drive-boot-cdrom");
     DO_TEST("disk-drive-fmt-qcow");
-    /* Can't roundtrip  shareable+cache mode option */
-    /*DO_TEST("disk-drive-shared");*/
-    /* Can't roundtrip v1 writethrough option */
-    /*DO_TEST("disk-drive-cache-v1-wt");*/
-    DO_TEST("disk-drive-cache-v1-wb");
-    DO_TEST("disk-drive-cache-v1-none");
     DO_TEST("disk-drive-error-policy-stop");
     DO_TEST("disk-drive-error-policy-enospace");
     DO_TEST("disk-drive-error-policy-wreport-rignore");
@@ -249,8 +229,6 @@ mymain(void)
     DO_TEST("nographics-vga");
     DO_TEST("input-usbmouse");
     DO_TEST("input-usbtablet");
-    /* Can't rountrip xenner arch */
-    /*DO_TEST("input-xen");*/
     DO_TEST("misc-acpi");
     DO_TEST("misc-disable-s3");
     DO_TEST("misc-disable-suspends");
@@ -283,6 +261,7 @@ mymain(void)
     DO_TEST("smp");
 
     DO_TEST("hyperv");
+    DO_TEST("hyperv-panic");
 
     DO_TEST("kvm-features");
 
@@ -291,15 +270,18 @@ mymain(void)
 
     DO_TEST("nosharepages");
 
-    DO_TEST("restore-v1");
     DO_TEST("restore-v2");
     DO_TEST("migrate");
 
     DO_TEST_FULL("qemu-ns-no-env", FLAG_EXPECT_WARNING);
 
-    virObjectUnref(driver.config);
-    virObjectUnref(driver.caps);
-    virObjectUnref(driver.xmlopt);
+    DO_TEST("machine-aeskeywrap-on-argv");
+    DO_TEST("machine-aeskeywrap-off-argv");
+    DO_TEST("machine-deakeywrap-on-argv");
+    DO_TEST("machine-deakeywrap-off-argv");
+    DO_TEST("machine-keywrap-none-argv");
+
+    qemuTestDriverFree(&driver);
 
     return ret == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

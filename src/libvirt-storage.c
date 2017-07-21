@@ -1,7 +1,7 @@
 /*
  * libvirt-storage.c: entry points for virStorage{Pool,Vol}Ptr APIs
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -364,7 +364,7 @@ virStoragePoolPtr
 virStoragePoolLookupByName(virConnectPtr conn,
                            const char *name)
 {
-    VIR_DEBUG("conn=%p, name=%s", conn, name);
+    VIR_DEBUG("conn=%p, name=%s", conn, NULLSTR(name));
 
     virResetLastError();
 
@@ -505,7 +505,7 @@ virStoragePoolLookupByVolume(virStorageVolPtr vol)
  * virStoragePoolCreateXML:
  * @conn: pointer to hypervisor connection
  * @xmlDesc: XML description for new pool
- * @flags: extra flags; not used yet, so callers should always pass 0
+ * @flags: bitwise-OR of virStoragePoolCreateFlags
  *
  * Create a new storage based on its XML description. The
  * pool is not persistent, so its definition will disappear
@@ -521,7 +521,7 @@ virStoragePoolCreateXML(virConnectPtr conn,
                         const char *xmlDesc,
                         unsigned int flags)
 {
-    VIR_DEBUG("conn=%p, xmlDesc=%s, flags=%x", conn, xmlDesc, flags);
+    VIR_DEBUG("conn=%p, xmlDesc=%s, flags=%x", conn, NULLSTR(xmlDesc), flags);
 
     virResetLastError();
 
@@ -551,8 +551,8 @@ virStoragePoolCreateXML(virConnectPtr conn,
  * @xml: XML description for new pool
  * @flags: extra flags; not used yet, so callers should always pass 0
  *
- * Define a new inactive storage pool based on its XML description. The
- * pool is persistent, until explicitly undefined.
+ * Define an inactive persistent storage pool or modify an existing persistent
+ * one from the XML description.
  *
  * virStoragePoolFree should be used to free the resources after the
  * storage pool object is no longer needed.
@@ -564,7 +564,7 @@ virStoragePoolDefineXML(virConnectPtr conn,
                         const char *xml,
                         unsigned int flags)
 {
-    VIR_DEBUG("conn=%p, xml=%s, flags=%x", conn, xml, flags);
+    VIR_DEBUG("conn=%p, xml=%s, flags=%x", conn, NULLSTR(xml), flags);
 
     virResetLastError();
 
@@ -670,7 +670,7 @@ virStoragePoolUndefine(virStoragePoolPtr pool)
 /**
  * virStoragePoolCreate:
  * @pool: pointer to storage pool
- * @flags: extra flags; not used yet, so callers should always pass 0
+ * @flags: bitwise-OR of virStoragePoolCreateFlags
  *
  * Starts an inactive storage pool
  *
@@ -1290,7 +1290,7 @@ virStorageVolPtr
 virStorageVolLookupByName(virStoragePoolPtr pool,
                           const char *name)
 {
-    VIR_DEBUG("pool=%p, name=%s", pool, name);
+    VIR_DEBUG("pool=%p, name=%s", pool, NULLSTR(name));
 
     virResetLastError();
 
@@ -1330,7 +1330,7 @@ virStorageVolPtr
 virStorageVolLookupByKey(virConnectPtr conn,
                          const char *key)
 {
-    VIR_DEBUG("conn=%p, key=%s", conn, key);
+    VIR_DEBUG("conn=%p, key=%s", conn, NULLSTR(key));
 
     virResetLastError();
 
@@ -1370,7 +1370,7 @@ virStorageVolPtr
 virStorageVolLookupByPath(virConnectPtr conn,
                           const char *path)
 {
-    VIR_DEBUG("conn=%p, path=%s", conn, path);
+    VIR_DEBUG("conn=%p, path=%s", conn, NULLSTR(path));
 
     virResetLastError();
 
@@ -1463,7 +1463,7 @@ virStorageVolCreateXML(virStoragePoolPtr pool,
                        const char *xmlDesc,
                        unsigned int flags)
 {
-    VIR_DEBUG("pool=%p, xmlDesc=%s, flags=%x", pool, xmlDesc, flags);
+    VIR_DEBUG("pool=%p, xmlDesc=%s, flags=%x", pool, NULLSTR(xmlDesc), flags);
 
     virResetLastError();
 
@@ -1516,7 +1516,7 @@ virStorageVolCreateXMLFrom(virStoragePoolPtr pool,
                            unsigned int flags)
 {
     VIR_DEBUG("pool=%p, xmlDesc=%s, clonevol=%p, flags=%x",
-              pool, xmlDesc, clonevol, flags);
+              pool, NULLSTR(xmlDesc), clonevol, flags);
 
     virResetLastError();
 
@@ -1684,7 +1684,7 @@ virStorageVolUpload(virStorageVolPtr vol,
 /**
  * virStorageVolDelete:
  * @vol: pointer to storage volume
- * @flags: extra flags; not used yet, so callers should always pass 0
+ * @flags: bitwise-OR of virStorageVolDeleteFlags
  *
  * Delete the storage volume from the pool
  *
@@ -1725,7 +1725,12 @@ virStorageVolDelete(virStorageVolPtr vol,
  * @vol: pointer to storage volume
  * @flags: extra flags; not used yet, so callers should always pass 0
  *
- * Ensure data previously on a volume is not accessible to future reads
+ * Ensure data previously on a volume is not accessible to future
+ * reads. Also note, that depending on the actual volume
+ * representation, this call may not really overwrite the
+ * physical location of the volume. For instance, files stored
+ * journaled, log structured, copy-on-write, versioned, and
+ * network file systems are known to be problematic.
  *
  * Returns 0 on success, or -1 on error
  */
@@ -1765,8 +1770,13 @@ virStorageVolWipe(virStorageVolPtr vol,
  * @algorithm: one of virStorageVolWipeAlgorithm
  * @flags: future flags, use 0 for now
  *
- * Similar to virStorageVolWipe, but one can choose
- * between different wiping algorithms.
+ * Similar to virStorageVolWipe, but one can choose between
+ * different wiping algorithms. Also note, that depending on the
+ * actual volume representation, this call may not really
+ * overwrite the physical location of the volume. For instance,
+ * files stored journaled, log structured, copy-on-write,
+ * versioned, and network file systems are known to be
+ * problematic.
  *
  * Returns 0 on success, or -1 on error.
  */

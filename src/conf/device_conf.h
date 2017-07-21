@@ -1,7 +1,7 @@
 /*
  * device_conf.h: device XML handling entry points
  *
- * Copyright (C) 2006-2012 Red Hat, Inc.
+ * Copyright (C) 2006-2012, 2014-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -62,7 +62,27 @@ struct _virInterfaceLink {
     unsigned int speed;      /* link speed in Mbits per second */
 };
 
-int virDevicePCIAddressIsValid(virDevicePCIAddressPtr addr);
+typedef enum {
+    VIR_NET_DEV_FEAT_GRXCSUM,
+    VIR_NET_DEV_FEAT_GTXCSUM,
+    VIR_NET_DEV_FEAT_GSG,
+    VIR_NET_DEV_FEAT_GTSO,
+    VIR_NET_DEV_FEAT_GGSO,
+    VIR_NET_DEV_FEAT_GGRO,
+    VIR_NET_DEV_FEAT_LRO,
+    VIR_NET_DEV_FEAT_RXVLAN,
+    VIR_NET_DEV_FEAT_TXVLAN,
+    VIR_NET_DEV_FEAT_NTUPLE,
+    VIR_NET_DEV_FEAT_RXHASH,
+    VIR_NET_DEV_FEAT_RDMA,
+    VIR_NET_DEV_FEAT_TXUDPTNL,
+    VIR_NET_DEV_FEAT_LAST
+} virNetDevFeature;
+
+VIR_ENUM_DECL(virNetDevFeature)
+
+int virDevicePCIAddressIsValid(virDevicePCIAddressPtr addr,
+                               bool report);
 
 int virDevicePCIAddressParseXML(xmlNodePtr node,
                                 virDevicePCIAddressPtr addr);

@@ -4,7 +4,7 @@
  * Description: Provides APIs for the management of domains
  * Author: Daniel Veillard <veillard@redhat.com>
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -90,6 +90,8 @@ typedef enum {
     VIR_DOMAIN_RUNNING_WAKEUP = 8,          /* returned from pmsuspended due to
                                                wakeup event */
     VIR_DOMAIN_RUNNING_CRASHED = 9,         /* resumed from crashed */
+    VIR_DOMAIN_RUNNING_POSTCOPY = 10,       /* running in post-copy migration mode */
+    VIR_DOMAIN_RUNNING_COLO = 11,           /* running in colo mode */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_RUNNING_LAST
@@ -116,6 +118,10 @@ typedef enum {
     VIR_DOMAIN_PAUSED_SHUTTING_DOWN = 8, /* paused during shutdown process */
     VIR_DOMAIN_PAUSED_SNAPSHOT = 9,      /* paused while creating a snapshot */
     VIR_DOMAIN_PAUSED_CRASHED = 10,     /* paused due to a guest crash */
+    VIR_DOMAIN_PAUSED_STARTING_UP = 11, /* the domain is being started */
+    VIR_DOMAIN_PAUSED_POSTCOPY = 12,    /* paused for post-copy migration */
+    VIR_DOMAIN_PAUSED_POSTCOPY_FAILED = 13, /* paused after failed post-copy */
+    VIR_DOMAIN_PAUSED_COLO = 14,        /* paused due to COLO migration */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_PAUSED_LAST
@@ -182,12 +188,34 @@ typedef enum {
                                         monitored by virDomainGetJobInfo); only
                                         limited set of commands may be allowed */
     VIR_DOMAIN_CONTROL_OCCUPIED = 2, /* occupied by a running command */
-    VIR_DOMAIN_CONTROL_ERROR = 3,    /* unusable, domain cannot be fully operated */
+    VIR_DOMAIN_CONTROL_ERROR = 3,    /* unusable, domain cannot be fully
+                                        operated, possible reason is provided
+                                        in the details field */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_CONTROL_LAST
 # endif
 } virDomainControlState;
+
+/**
+ * virDomainControlErrorReason:
+ *
+ * Reason for the error state.
+ */
+typedef enum {
+    VIR_DOMAIN_CONTROL_ERROR_REASON_NONE = 0,     /* server didn't provide a
+                                                     reason */
+    VIR_DOMAIN_CONTROL_ERROR_REASON_UNKNOWN = 1,  /* unknown reason for the
+                                                     error */
+    VIR_DOMAIN_CONTROL_ERROR_REASON_MONITOR = 2,  /* monitor connection is
+                                                     broken */
+    VIR_DOMAIN_CONTROL_ERROR_REASON_INTERNAL = 3, /* error caused due to
+                                                     internal failure in libvirt
+                                                  */
+# ifdef VIR_ENUM_SENTINELS
+    VIR_DOMAIN_CONTROL_ERROR_REASON_LAST
+# endif
+} virDomainControlErrorReason;
 
 /**
  * virDomainControlInfo:
@@ -198,7 +226,8 @@ typedef enum {
 typedef struct _virDomainControlInfo virDomainControlInfo;
 struct _virDomainControlInfo {
     unsigned int state;     /* control state, one of virDomainControlState */
-    unsigned int details;   /* state details, currently 0 */
+    unsigned int details;   /* state details, currently 0 except for ERROR
+                               state (one of virDomainControlErrorReason) */
     unsigned long long stateTime; /* for how long (in msec) control interface
                                      has been in current state (except for OK
                                      and ERROR states) */
@@ -635,6 +664,9 @@ typedef enum {
     VIR_MIGRATE_ABORT_ON_ERROR    = (1 << 12), /* abort migration on I/O errors happened during migration */
     VIR_MIGRATE_AUTO_CONVERGE     = (1 << 13), /* force convergence */
     VIR_MIGRATE_RDMA_PIN_ALL      = (1 << 14), /* RDMA memory pinning */
+    VIR_MIGRATE_COLO              = (1 << 15), /* COLO migration */
+    VIR_MIGRATE_POSTCOPY          = (1 << 16), /* enable (but do not start) post-copy migration */
+    VIR_MIGRATE_POSTCOPY_AFTER_PRECOPY = (1 << 17), /* switch to post-copy after the first pre-copy iteration */
 } virDomainMigrateFlags;
 
 
@@ -724,6 +756,15 @@ typedef enum {
  */
 # define VIR_MIGRATE_PARAM_LISTEN_ADDRESS    "listen_address"
 
+/**
+ * VIR_MIGRATE_PARAM_MIGRATE_DISKS:
+ *
+ * virDomainMigrate* params multiple field: The multiple values that list
+ * the block devices to be migrated. At the moment this is only supported
+ * by the QEMU driver but not for the tunnelled migration.
+ */
+# define VIR_MIGRATE_PARAM_MIGRATE_DISKS    "migrate_disks"
+
 /* Domain migration. */
 virDomainPtr virDomainMigrate (virDomainPtr domain, virConnectPtr dconn,
                                unsigned long flags, const char *dname,
@@ -773,6 +814,9 @@ int virDomainMigrateSetMaxSpeed(virDomainPtr domain,
 int virDomainMigrateGetMaxSpeed(virDomainPtr domain,
                                 unsigned long *bandwidth,
                                 unsigned int flags);
+
+int virDomainMigrateStartPostCopy(virDomainPtr domain,
+                                  unsigned int flags);
 
 char * virConnectGetDomainCapabilities(virConnectPtr conn,
                                        const char *emulatorbin,
@@ -1302,6 +1346,13 @@ int                     virDomainInterfaceStats (virDomainPtr dom,
 # define VIR_DOMAIN_BANDWIDTH_IN_BURST "inbound.burst"
 
 /**
+ * VIR_DOMAIN_BANDWIDTH_IN_FLOOR:
+ *
+ * Macro represents the inbound floor of NIC bandwidth, as a uint.
+ */
+# define VIR_DOMAIN_BANDWIDTH_IN_FLOOR "inbound.floor"
+
+/**
  * VIR_DOMAIN_BANDWIDTH_OUT_AVERAGE:
  *
  * Macro represents the outbound average of NIC bandwidth, as a uint.
@@ -1566,6 +1617,37 @@ int                     virDomainGetEmulatorPinInfo (virDomainPtr domain,
                                                      unsigned char *cpumaps,
                                                      int maplen,
                                                      unsigned int flags);
+
+/**
+ * virIOThreadInfo:
+ *
+ * The data structure for information about all IOThreads in a domain
+ */
+typedef struct _virDomainIOThreadInfo virDomainIOThreadInfo;
+typedef virDomainIOThreadInfo *virDomainIOThreadInfoPtr;
+struct _virDomainIOThreadInfo {
+    unsigned int iothread_id;          /* IOThread ID */
+    unsigned char *cpumap;             /* CPU map for thread. A pointer to an */
+                                       /* array of real CPUs (in 8-bit bytes) */
+    int cpumaplen;                     /* cpumap size */
+};
+
+void                 virDomainIOThreadInfoFree(virDomainIOThreadInfoPtr info);
+
+int                  virDomainGetIOThreadInfo(virDomainPtr domain,
+                                               virDomainIOThreadInfoPtr **info,
+                                               unsigned int flags);
+int                  virDomainPinIOThread(virDomainPtr domain,
+                                          unsigned int iothread_id,
+                                          unsigned char *cpumap,
+                                          int maplen,
+                                          unsigned int flags);
+int                  virDomainAddIOThread(virDomainPtr domain,
+                                          unsigned int iothread_id,
+                                          unsigned int flags);
+int                  virDomainDelIOThread(virDomainPtr domain,
+                                          unsigned int iothread_id,
+                                          unsigned int flags);
 
 /**
  * VIR_USE_CPU:
@@ -2258,6 +2340,7 @@ typedef enum {
 typedef enum {
     VIR_DOMAIN_EVENT_DEFINED_ADDED = 0,     /* Newly created config file */
     VIR_DOMAIN_EVENT_DEFINED_UPDATED = 1,   /* Changed config file */
+    VIR_DOMAIN_EVENT_DEFINED_RENAMED = 2,   /* Domain was renamed */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_DEFINED_LAST
@@ -2271,6 +2354,7 @@ typedef enum {
  */
 typedef enum {
     VIR_DOMAIN_EVENT_UNDEFINED_REMOVED = 0, /* Deleted the config file */
+    VIR_DOMAIN_EVENT_UNDEFINED_RENAMED = 1, /* Domain was renamed */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_UNDEFINED_LAST
@@ -2307,6 +2391,8 @@ typedef enum {
     VIR_DOMAIN_EVENT_SUSPENDED_RESTORED = 4,  /* Restored from paused state file */
     VIR_DOMAIN_EVENT_SUSPENDED_FROM_SNAPSHOT = 5, /* Restored from paused snapshot */
     VIR_DOMAIN_EVENT_SUSPENDED_API_ERROR = 6, /* suspended after failure during libvirt API call */
+    VIR_DOMAIN_EVENT_SUSPENDED_POSTCOPY = 7, /* suspended for post-copy migration */
+    VIR_DOMAIN_EVENT_SUSPENDED_POSTCOPY_FAILED = 8, /* suspended after failed post-copy */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_SUSPENDED_LAST
@@ -2322,6 +2408,8 @@ typedef enum {
     VIR_DOMAIN_EVENT_RESUMED_UNPAUSED = 0,   /* Normal resume due to admin unpause */
     VIR_DOMAIN_EVENT_RESUMED_MIGRATED = 1,   /* Resumed for completion of migration */
     VIR_DOMAIN_EVENT_RESUMED_FROM_SNAPSHOT = 2, /* Resumed from snapshot */
+    VIR_DOMAIN_EVENT_RESUMED_POSTCOPY = 3,   /* Resumed, but migration is still
+                                                running in post-copy mode */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_RESUMED_LAST
@@ -2466,6 +2554,13 @@ struct _virDomainJobInfo {
     unsigned long long fileTotal;
     unsigned long long fileProcessed;
     unsigned long long fileRemaining;
+
+    /* COLO's checkpoint's information */
+    double chkptSize;
+    double chkptLength;
+    double chkptPause;
+    unsigned long long chkptCount;
+    unsigned long long chkptProxyDiscompare;
 };
 
 /**
@@ -2499,6 +2594,16 @@ int virDomainAbortJob(virDomainPtr dom);
 # define VIR_DOMAIN_JOB_TIME_ELAPSED             "time_elapsed"
 
 /**
+ * VIR_DOMAIN_JOB_TIME_ELAPSED_NET:
+ *
+ * virDomainGetJobStats field: time (ms) since the beginning of the
+ * migration job NOT including the time required to transfer control
+ * flow from the source host to the destination host,
+ * as VIR_TYPED_PARAM_ULLONG.
+ */
+# define VIR_DOMAIN_JOB_TIME_ELAPSED_NET         "time_elapsed_net"
+
+/**
  * VIR_DOMAIN_JOB_TIME_REMAINING:
  *
  * virDomainGetJobStats field: remaining time (ms) for VIR_DOMAIN_JOB_BOUNDED
@@ -2512,9 +2617,20 @@ int virDomainAbortJob(virDomainPtr dom);
  * VIR_DOMAIN_JOB_DOWNTIME:
  *
  * virDomainGetJobStats field: downtime (ms) that is expected to happen
- * during migration, as VIR_TYPED_PARAM_ULLONG.
+ * during migration, as VIR_TYPED_PARAM_ULLONG. The real computed downtime
+ * between the time guest CPUs were paused and the time they were resumed
+ * is reported for completed migration.
  */
 # define VIR_DOMAIN_JOB_DOWNTIME                 "downtime"
+
+/**
+ * VIR_DOMAIN_JOB_DOWNTIME_NET:
+ *
+ * virDomainGetJobStats field: real measured downtime (ms) NOT including
+ * the time required to transfer control flow from the source host to the
+ * destination host, as VIR_TYPED_PARAM_ULLONG.
+ */
+# define VIR_DOMAIN_JOB_DOWNTIME_NET             "downtime_net"
 
 /**
  * VIR_DOMAIN_JOB_SETUP_TIME:
@@ -2630,6 +2746,25 @@ int virDomainAbortJob(virDomainPtr dom);
  */
 # define VIR_DOMAIN_JOB_MEMORY_BPS               "memory_bps"
 
+/** VIR_DOMAIN_JOB_MEMORY_DIRTY_RATE:
+ *
+ * virDomainGetJobStats field: number of memory pages dirtied by the guest
+ * per second, as VIR_TYPED_PARAM_ULLONG. This statistics makes sense only
+ * when live migration is running.
+ */
+# define VIR_DOMAIN_JOB_MEMORY_DIRTY_RATE        "memory_dirty_rate"
+
+/**
+ * VIR_DOMAIN_JOB_MEMORY_ITERATION:
+ *
+ * virDomainGetJobStats field: current iteration over domain's memory
+ * during live migration, as VIR_TYPED_PARAM_ULLONG. This is set to zero
+ * when memory starts to be transferred and the value is increased by one
+ * every time a new iteration is started to transfer memory pages dirtied
+ * since the last iteration.
+ */
+# define VIR_DOMAIN_JOB_MEMORY_ITERATION         "memory_iteration"
+
 /**
  * VIR_DOMAIN_JOB_DISK_TOTAL:
  *
@@ -2713,6 +2848,41 @@ int virDomainAbortJob(virDomainPtr dom);
 # define VIR_DOMAIN_JOB_COMPRESSION_OVERFLOW     "compression_overflow"
 
 
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_SIZE:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_SIZE          "checkpoint_size"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_LENGTH:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_LENGTH        "checkpoint_length"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_PAUSE:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_PAUSE         "checkpoint_pause"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_COUNT:
+ *
+ * virDomainGetJobStats field:
+ */
+# define VIR_DOMAIN_JOB_CHECKPOINT_COUNT         "checkpoint_count"
+
+/**
+ * VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE:
+ *
+ * virDomainGetJobStats field:
+ */
+ # define VIR_DOMAIN_JOB_CHECKPOINT_PROXY_DISCOMPARE  "checkpoint_proxy_discompare"
+ 
 
 /**
  * virConnectDomainEventGenericCallback:
@@ -2757,6 +2927,7 @@ typedef enum {
     VIR_DOMAIN_EVENT_WATCHDOG_POWEROFF, /* Guest is forcibly powered off */
     VIR_DOMAIN_EVENT_WATCHDOG_SHUTDOWN, /* Guest is requested to gracefully shutdown */
     VIR_DOMAIN_EVENT_WATCHDOG_DEBUG,    /* No action, a debug message logged */
+    VIR_DOMAIN_EVENT_WATCHDOG_INJECTNMI,/* Inject a non-maskable interrupt into guest */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_WATCHDOG_LAST
@@ -3153,6 +3324,44 @@ typedef void (*virConnectDomainEventDeviceRemovedCallback)(virConnectPtr conn,
                                                            void *opaque);
 
 /**
+ * virConnectDomainEventDeviceAddedCallback:
+ * @conn: connection object
+ * @dom: domain on which the event occurred
+ * @devAlias: device alias
+ * @opaque: application specified data
+ *
+ * This callback occurs when a device is added to the domain.
+ *
+ * The callback signature to use when registering for an event of type
+ * VIR_DOMAIN_EVENT_ID_DEVICE_ADDED with virConnectDomainEventRegisterAny()
+ */
+typedef void (*virConnectDomainEventDeviceAddedCallback)(virConnectPtr conn,
+                                                         virDomainPtr dom,
+                                                         const char *devAlias,
+                                                         void *opaque);
+
+/**
+ * virConnectDomainEventMigrationIterationCallback:
+ * @conn: connection object
+ * @dom: domain on which the event occurred
+ * @iteration: current iteration over domain's memory
+ * @opaque: application specific data
+ *
+ * This callback occurs during live migration when a new iteration over
+ * domain's memory starts. The @iteration value is increased by one every
+ * time a new iteration is started to transfer memory pages dirtied since
+ * the last iteration.
+ *
+ * The callback signature to use when registering for an event of type
+ * VIR_DOMAIN_EVENT_ID_MIGRATION_ITERATION with
+ * virConnectDomainEventRegisterAny().
+ */
+typedef void (*virConnectDomainEventMigrationIterationCallback)(virConnectPtr conn,
+                                                                virDomainPtr dom,
+                                                                int iteration,
+                                                                void *opaque);
+
+/**
  * VIR_DOMAIN_TUNABLE_CPU_VCPUPIN:
  *
  * Macro represents formatted pinning for one vcpu specified by id which is
@@ -3168,6 +3377,15 @@ typedef void (*virConnectDomainEventDeviceRemovedCallback)(virConnectPtr conn,
  * as VIR_TYPED_PARAM_STRING.
  */
 # define VIR_DOMAIN_TUNABLE_CPU_EMULATORPIN "cputune.emulatorpin"
+
+/**
+ * VIR_DOMAIN_TUNABLE_CPU_IOTHREADSPIN:
+ *
+ * Macro represents formatted pinning for one IOThread specified by id which is
+ * appended to the parameter name, for example "cputune.iothreadpin1",
+ * as VIR_TYPED_PARAM_STRING.
+ */
+# define VIR_DOMAIN_TUNABLE_CPU_IOTHREADSPIN "cputune.iothreadpin%u"
 
 /**
  * VIR_DOMAIN_TUNABLE_CPU_CPU_SHARES:
@@ -3425,6 +3643,8 @@ typedef enum {
     VIR_DOMAIN_EVENT_ID_BLOCK_JOB_2 = 16,    /* virConnectDomainEventBlockJobCallback */
     VIR_DOMAIN_EVENT_ID_TUNABLE = 17,        /* virConnectDomainEventTunableCallback */
     VIR_DOMAIN_EVENT_ID_AGENT_LIFECYCLE = 18,/* virConnectDomainEventAgentLifecycleCallback */
+    VIR_DOMAIN_EVENT_ID_DEVICE_ADDED = 19,   /* virConnectDomainEventDeviceAddedCallback */
+    VIR_DOMAIN_EVENT_ID_MIGRATION_ITERATION = 20, /* virConnectDomainEventMigrationIterationCallback */
 
 # ifdef VIR_ENUM_SENTINELS
     VIR_DOMAIN_EVENT_ID_LAST
@@ -3682,5 +3902,50 @@ typedef struct _virTypedParameter virMemoryParameter;
  */
 typedef virMemoryParameter *virMemoryParameterPtr;
 
+typedef enum {
+    VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE = 0, /* Parse DHCP lease file */
+    VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_AGENT = 1, /* Query qemu guest agent */
+
+# ifdef VIR_ENUM_SENTINELS
+    VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LAST
+# endif
+} virDomainInterfaceAddressesSource;
+
+typedef struct _virDomainInterfaceIPAddress virDomainIPAddress;
+typedef virDomainIPAddress *virDomainIPAddressPtr;
+struct _virDomainInterfaceIPAddress {
+    int type;                /* virIPAddrType */
+    char *addr;              /* IP address */
+    unsigned int prefix;     /* IP address prefix */
+};
+
+typedef struct _virDomainInterface virDomainInterface;
+typedef virDomainInterface *virDomainInterfacePtr;
+struct _virDomainInterface {
+    char *name;                     /* interface name */
+    char *hwaddr;                   /* hardware address, may be NULL */
+    unsigned int naddrs;            /* number of items in @addrs */
+    virDomainIPAddressPtr addrs;    /* array of IP addresses */
+};
+
+int virDomainInterfaceAddresses(virDomainPtr dom,
+                                virDomainInterfacePtr **ifaces,
+                                unsigned int source,
+                                unsigned int flags);
+
+void virDomainInterfaceFree(virDomainInterfacePtr iface);
+
+typedef enum {
+    VIR_DOMAIN_PASSWORD_ENCRYPTED = 1 << 0, /* the password is already encrypted */
+} virDomainSetUserPasswordFlags;
+
+int virDomainSetUserPassword(virDomainPtr dom,
+                             const char *user,
+                             const char *password,
+                             unsigned int flags);
+
+int virDomainRename(virDomainPtr dom,
+                    const char *new_name,
+                    unsigned int flags);
 
 #endif /* __VIR_LIBVIRT_DOMAIN_H__ */

@@ -28,23 +28,6 @@
 #define VIR_FROM_THIS VIR_FROM_NONE
 
 
-static int
-testCompareXMLToXML(const char *inxmldata, const char *outxmldata)
-{
-    int ret = 1;
-
-    if (STRNEQ(outxmldata, inxmldata)) {
-        virtTestDifference(stderr, outxmldata, inxmldata);
-        goto cleanup;
-    }
-
-    ret = 0;
- cleanup:
-
-    return ret;
-}
-
-
 typedef struct _testQemuData testQemuData;
 typedef testQemuData *testQemuDataPtr;
 struct _testQemuData {
@@ -130,6 +113,7 @@ testGetCaps(char *capsData, const testQemuData *data)
 
  error:
     virObjectUnref(qemuCaps);
+    virObjectUnref(caps);
     return NULL;
 }
 
@@ -139,19 +123,16 @@ testQemuCapsXML(const void *opaque)
     int ret = -1;
     const testQemuData *data = opaque;
     char *capsFile = NULL, *xmlFile = NULL;
-    char *capsData = NULL, *xmlData = NULL;
+    char *capsData = NULL;
     char *capsXml = NULL;
     virCapsPtr capsProvided = NULL;
 
-   if (virAsprintf(&xmlFile, "%s/qemucaps2xmldata/%s.xml",
+    if (virAsprintf(&xmlFile, "%s/qemucaps2xmldata/%s.xml",
                     abs_srcdir, data->base) < 0)
         goto cleanup;
 
     if (virAsprintf(&capsFile, "%s/qemucaps2xmldata/%s.caps",
                     abs_srcdir, data->base) < 0)
-        goto cleanup;
-
-    if (virtTestLoadFile(xmlFile, &xmlData) < 0)
         goto cleanup;
 
     if (virtTestLoadFile(capsFile, &capsData) < 0)
@@ -164,14 +145,15 @@ testQemuCapsXML(const void *opaque)
     if (!capsXml)
         goto cleanup;
 
-    ret = testCompareXMLToXML(capsXml, xmlData);
+    if (virtTestCompareToFile(capsXml, xmlFile) < 0)
+        goto cleanup;
 
+    ret = 0;
  cleanup:
     VIR_FREE(xmlFile);
     VIR_FREE(capsFile);
     VIR_FREE(capsXml);
     VIR_FREE(capsData);
-    VIR_FREE(xmlData);
     virObjectUnref(capsProvided);
     return ret;
 }
@@ -207,4 +189,4 @@ mymain(void)
     return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
-VIRT_TEST_MAIN(mymain)
+VIRT_TEST_MAIN_PRELOAD(mymain, abs_builddir "/.libs/qemucaps2xmlmock.so")

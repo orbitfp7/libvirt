@@ -33,5 +33,65 @@ int virHostValidateLXC(void)
                                    _("Upgrade to a kernel supporting namespaces")) < 0)
         ret = -1;
 
+    if (virHostValidateNamespace("LXC", "ipc",
+                                 VIR_HOST_VALIDATE_FAIL,
+                                 _("IPC namespace support is required")) < 0)
+        ret = -1;
+
+    if (virHostValidateNamespace("LXC", "mnt",
+                                 VIR_HOST_VALIDATE_FAIL,
+                                 _("Mount namespace support is required")) < 0)
+        ret = -1;
+
+    if (virHostValidateNamespace("LXC", "pid",
+                                 VIR_HOST_VALIDATE_FAIL,
+                                 _("PID namespace support is required")) < 0)
+        ret = -1;
+
+    if (virHostValidateNamespace("LXC", "uts",
+                                 VIR_HOST_VALIDATE_FAIL,
+                                 _("UTS namespace support is required")) < 0)
+        ret = -1;
+
+    if (virHostValidateNamespace("LXC", "net",
+                                 VIR_HOST_VALIDATE_WARN,
+                                 _("Network namespace support is recommended")) < 0)
+        ret = -1;
+
+    if (virHostValidateNamespace("LXC", "user",
+                                 VIR_HOST_VALIDATE_WARN,
+                                 _("User namespace support is recommended")) < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "memory",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "MEMCG") < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "cpu",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "CGROUP_SCHED") < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "cpuacct",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "CGROUP_CPUACCT") < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "cpuset",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "CPUSETS") < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "devices",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "CGROUP_DEVICE") < 0)
+        ret = -1;
+
+    if (virHostValidateCGroupController("LXC", "blkio",
+                                        VIR_HOST_VALIDATE_FAIL,
+                                        "BLK_CGROUP") < 0)
+        ret = -1;
+
     return ret;
 }

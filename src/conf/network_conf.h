@@ -1,7 +1,7 @@
 /*
  * network_conf.h: network XML handling
  *
- * Copyright (C) 2006-2014 Red Hat, Inc.
+ * Copyright (C) 2006-2015 Red Hat, Inc.
  * Copyright (C) 2006-2008 Daniel P. Berrange
  *
  * This library is free software; you can redistribute it and/or
@@ -40,6 +40,7 @@
 # include "device_conf.h"
 # include "virbitmap.h"
 # include "networkcommon_conf.h"
+# include "virobject.h"
 
 typedef enum {
     VIR_NETWORK_FORWARD_NONE   = 0,
@@ -257,7 +258,7 @@ struct _virNetworkDef {
 typedef struct _virNetworkObj virNetworkObj;
 typedef virNetworkObj *virNetworkObjPtr;
 struct _virNetworkObj {
-    virMutex lock;
+    virObjectLockable parent;
 
     pid_t dnsmasqPid;
     pid_t radvdPid;
@@ -274,12 +275,11 @@ struct _virNetworkObj {
     unsigned int taint;
 };
 
+virNetworkObjPtr virNetworkObjNew(void);
+void virNetworkObjEndAPI(virNetworkObjPtr *net);
+
 typedef struct _virNetworkObjList virNetworkObjList;
 typedef virNetworkObjList *virNetworkObjListPtr;
-struct _virNetworkObjList {
-    size_t count;
-    virNetworkObjPtr *objs;
-};
 
 typedef enum {
     VIR_NETWORK_TAINT_HOOK,                 /* Hook script was executed over
@@ -298,26 +298,31 @@ virNetworkObjIsActive(const virNetworkObj *net)
     return net->active;
 }
 
+virNetworkObjListPtr virNetworkObjListNew(void);
+
+virNetworkObjPtr virNetworkObjFindByUUIDLocked(virNetworkObjListPtr nets,
+                                               const unsigned char *uuid);
+virNetworkObjPtr virNetworkObjFindByUUID(virNetworkObjListPtr nets,
+                                         const unsigned char *uuid);
+virNetworkObjPtr virNetworkObjFindByNameLocked(virNetworkObjListPtr nets,
+                                               const char *name);
+virNetworkObjPtr virNetworkObjFindByName(virNetworkObjListPtr nets,
+                                         const char *name);
 bool virNetworkObjTaint(virNetworkObjPtr obj,
                         virNetworkTaintFlags taint);
 
-virNetworkObjPtr virNetworkFindByUUID(virNetworkObjListPtr nets,
-                                      const unsigned char *uuid);
-virNetworkObjPtr virNetworkFindByName(virNetworkObjListPtr nets,
-                                      const char *name);
-
-
 void virNetworkDefFree(virNetworkDefPtr def);
-void virNetworkObjFree(virNetworkObjPtr net);
-void virNetworkObjListFree(virNetworkObjListPtr vms);
-
 
 typedef bool (*virNetworkObjListFilter)(virConnectPtr conn,
                                         virNetworkDefPtr def);
 
+enum {
+    VIR_NETWORK_OBJ_LIST_ADD_LIVE = (1 << 0),
+    VIR_NETWORK_OBJ_LIST_ADD_CHECK_LIVE = (1 << 1),
+};
 virNetworkObjPtr virNetworkAssignDef(virNetworkObjListPtr nets,
                                      virNetworkDefPtr def,
-                                     bool live);
+                                     unsigned int flags);
 void virNetworkObjAssignDef(virNetworkObjPtr network,
                             virNetworkDefPtr def,
                             bool live);
@@ -355,6 +360,9 @@ virPortGroupDefPtr virPortGroupFindByName(virNetworkDefPtr net,
 virNetworkIpDefPtr
 virNetworkDefGetIpByIndex(const virNetworkDef *def,
                           int family, size_t n);
+virNetworkRouteDefPtr
+virNetworkDefGetRouteByIndex(const virNetworkDef *def,
+                             int family, size_t n);
 int virNetworkIpDefPrefix(const virNetworkIpDef *def);
 int virNetworkIpDefNetmask(const virNetworkIpDef *def,
                            virSocketAddrPtr netmask);
@@ -396,13 +404,6 @@ int virNetworkBridgeInUse(virNetworkObjListPtr nets,
                           const char *bridge,
                           const char *skipname);
 
-char *virNetworkAllocateBridge(virNetworkObjListPtr nets,
-                               const char *template);
-
-int virNetworkSetBridgeName(virNetworkObjListPtr nets,
-                            virNetworkDefPtr def,
-                            int check_collision);
-
 void virNetworkSetBridgeMacAddr(virNetworkDefPtr def);
 
 int
@@ -412,13 +413,6 @@ virNetworkObjUpdate(virNetworkObjPtr obj,
                     int parentIndex,
                     const char *xml,
                     unsigned int flags);  /* virNetworkUpdateFlags */
-
-int virNetworkObjIsDuplicate(virNetworkObjListPtr doms,
-                             virNetworkDefPtr def,
-                             bool check_active);
-
-void virNetworkObjLock(virNetworkObjPtr obj);
-void virNetworkObjUnlock(virNetworkObjPtr obj);
 
 VIR_ENUM_DECL(virNetworkForward)
 
@@ -440,9 +434,31 @@ VIR_ENUM_DECL(virNetworkForward)
                  VIR_CONNECT_LIST_NETWORKS_FILTERS_AUTOSTART)
 
 int virNetworkObjListExport(virConnectPtr conn,
-                            virNetworkObjList netobjs,
+                            virNetworkObjListPtr netobjs,
                             virNetworkPtr **nets,
                             virNetworkObjListFilter filter,
+                            unsigned int flags);
+
+typedef int (*virNetworkObjListIterator)(virNetworkObjPtr net,
+                                         void *opaque);
+
+int virNetworkObjListForEach(virNetworkObjListPtr nets,
+                             virNetworkObjListIterator callback,
+                             void *opaque);
+
+int virNetworkObjListGetNames(virNetworkObjListPtr nets,
+                              bool active,
+                              char **names,
+                              int nnames,
+                              virNetworkObjListFilter filter,
+                              virConnectPtr conn);
+
+int virNetworkObjListNumOfNetworks(virNetworkObjListPtr nets,
+                                   bool active,
+                                   virNetworkObjListFilter filter,
+                                   virConnectPtr conn);
+
+void virNetworkObjListPrune(virNetworkObjListPtr nets,
                             unsigned int flags);
 
 /* for testing */

@@ -8,8 +8,7 @@
     <type arch='x86_64' machine='pc'>hvm</type>
     <boot dev='network'/>
   </os>
-  <cpu mode='host-passthrough'>
-  </cpu>
+  <cpu mode='host-passthrough'/>
   <clock offset='utc'>
     <timer name='kvmclock' present='no'/>
   </clock>
@@ -20,6 +19,8 @@
     <emulator>/usr/bin/qemu</emulator>
     <controller type='usb' index='0'/>
     <controller type='pci' index='0' model='pci-root'/>
+    <input type='mouse' bus='ps2'/>
+    <input type='keyboard' bus='ps2'/>
     <memballoon model='virtio'/>
   </devices>
 </domain>

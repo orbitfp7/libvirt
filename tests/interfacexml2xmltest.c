@@ -34,7 +34,7 @@ testCompareXMLToXMLFiles(const char *xml)
         goto fail;
 
     if (STRNEQ(xmlData, actual)) {
-        virtTestDifference(stderr, xmlData, actual);
+        virtTestDifferenceFull(stderr, xmlData, xml, actual, NULL);
         goto fail;
     }
 
@@ -75,6 +75,7 @@ mymain(void)
         ret = -1
 
     DO_TEST("ethernet-dhcp");
+    DO_TEST("ethernet-dhcp-and-multi-static");
     DO_TEST("ethernet-static");
     DO_TEST("ethernet-static-no-prefix");
     DO_TEST("bridge");

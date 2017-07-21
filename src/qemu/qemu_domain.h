@@ -34,12 +34,7 @@
 # include "qemu_conf.h"
 # include "qemu_capabilities.h"
 # include "virchrdev.h"
-
-# define QEMU_EXPECTED_VIRT_TYPES      \
-    ((1 << VIR_DOMAIN_VIRT_QEMU) |     \
-     (1 << VIR_DOMAIN_VIRT_KQEMU) |    \
-     (1 << VIR_DOMAIN_VIRT_KVM) |      \
-     (1 << VIR_DOMAIN_VIRT_XEN))
+# include "virobject.h"
 
 # define QEMU_DOMAIN_FORMAT_LIVE_FLAGS      \
     (VIR_DOMAIN_XML_SECURE |                \
@@ -95,6 +90,7 @@ typedef enum {
     QEMU_ASYNC_JOB_SAVE,
     QEMU_ASYNC_JOB_DUMP,
     QEMU_ASYNC_JOB_SNAPSHOT,
+    QEMU_ASYNC_JOB_START,
 
     QEMU_ASYNC_JOB_LAST
 } qemuDomainAsyncJob;
@@ -106,27 +102,43 @@ struct _qemuDomainJobInfo {
     virDomainJobType type;
     unsigned long long started; /* When the async job started */
     unsigned long long stopped; /* When the domain's CPUs were stopped */
+    unsigned long long sent; /* When the source sent status info to the
+                                destination (only for migrations). */
+    unsigned long long received; /* When the destination host received status
+                                    info from the source (migrations only). */
     /* Computed values */
     unsigned long long timeElapsed;
     unsigned long long timeRemaining;
+    long long timeDelta; /* delta = received - sent, i.e., the difference
+                            between the source and the destination time plus
+                            the time between the end of Perform phase on the
+                            source and the beginning of Finish phase on the
+                            destination. */
+    bool timeDeltaSet;
     /* Raw values from QEMU */
-    qemuMonitorMigrationStatus status;
+    qemuMonitorMigrationStats stats;
 };
 
 struct qemuDomainJobObj {
     virCond cond;                       /* Use to coordinate jobs */
     qemuDomainJob active;               /* Currently running job */
     unsigned long long owner;           /* Thread id which set current job */
+    const char *ownerAPI;               /* The API which owns the job */
+    unsigned long long started;         /* When the current job started */
 
     virCond asyncCond;                  /* Use to coordinate with async jobs */
     qemuDomainAsyncJob asyncJob;        /* Currently active async job */
     unsigned long long asyncOwner;      /* Thread which set current async job */
+    const char *asyncOwnerAPI;          /* The API which owns the async job */
+    unsigned long long asyncStarted;    /* When the current async job started */
     int phase;                          /* Job phase (mainly for migrations) */
     unsigned long long mask;            /* Jobs allowed during async job */
     bool dump_memory_only;              /* use dump-guest-memory to do dump */
     qemuDomainJobInfoPtr current;       /* async job progress data */
     qemuDomainJobInfoPtr completed;     /* statistics data of a recently completed job */
-    bool asyncAbort;                    /* abort of async job requested */
+    bool abortJob;                      /* abort of the job requested */
+    bool spiceMigrated;                 /* spice migration completed */
+    bool postcopyEnabled;               /* post-copy migration was enabled */
 };
 
 typedef void (*qemuDomainCleanupCallback)(virQEMUDriverPtr driver,
@@ -154,11 +166,9 @@ struct _qemuDomainObjPrivate {
     int nvcpupids;
     int *vcpupids;
 
-    int niothreadpids;
-    int *iothreadpids;
-
     virDomainPCIAddressSetPtr pciaddrs;
     virDomainCCWAddressSetPtr ccwaddrs;
+    virDomainVirtioSerialAddrSetPtr vioserialaddrs;
     int persistentAddrs;
 
     virQEMUCapsPtr qemuCaps;
@@ -173,6 +183,7 @@ struct _qemuDomainObjPrivate {
     int nbdPort; /* Port used for migration with NBD */
     unsigned short migrationPort;
     int preMigrationState;
+    int coloPort;
 
     virChrdevsPtr devs;
 
@@ -187,7 +198,37 @@ struct _qemuDomainObjPrivate {
     char **qemuDevices; /* NULL-terminated list of devices aliases known to QEMU */
 
     bool hookRun;  /* true if there was a hook run over this domain */
+
+    /* Bitmaps below hold data from the auto NUMA feature */
     virBitmapPtr autoNodeset;
+    virBitmapPtr autoCpuset;
+
+    bool signalIOError; /* true if the domain condition should be signalled on
+                           I/O error */
+    char *machineName;
+    bool signalStop; /* true if the domain condition should be signalled on
+                        QMP STOP event */
+};
+
+# define QEMU_DOMAIN_DISK_PRIVATE(disk)	\
+    ((qemuDomainDiskPrivatePtr) (disk)->privateData)
+
+typedef struct _qemuDomainDiskPrivate qemuDomainDiskPrivate;
+typedef qemuDomainDiskPrivate *qemuDomainDiskPrivatePtr;
+struct _qemuDomainDiskPrivate {
+    virObject parent;
+
+    /* ideally we want a smarter way to interlock block jobs on single qemu disk
+     * in the future, but for now we just disallow any concurrent job on a
+     * single disk */
+    bool blockjob;
+
+    /* for some synchronous block jobs, we need to notify the owner */
+    int blockJobType;   /* type of the block job from the event */
+    int blockJobStatus; /* status of the finished block job */
+    bool blockJobSync; /* the block job needs synchronized termination */
+
+    bool migrating; /* the disk is being migrated */
 };
 
 typedef enum {
@@ -196,6 +237,7 @@ typedef enum {
     QEMU_PROCESS_EVENT_DEVICE_DELETED,
     QEMU_PROCESS_EVENT_NIC_RX_FILTER_CHANGED,
     QEMU_PROCESS_EVENT_SERIAL_CHANGED,
+    QEMU_PROCESS_EVENT_BLOCK_JOB,
 
     QEMU_PROCESS_EVENT_LAST
 } qemuProcessEventType;
@@ -204,8 +246,12 @@ struct qemuProcessEvent {
     virDomainObjPtr vm;
     qemuProcessEventType eventType;
     int action;
+    int status;
     void *data;
 };
+
+typedef struct _qemuDomainLogContext qemuDomainLogContext;
+typedef qemuDomainLogContext *qemuDomainLogContextPtr;
 
 const char *qemuDomainAsyncJobPhaseToString(qemuDomainAsyncJob job,
                                             int phase);
@@ -242,6 +288,8 @@ void qemuDomainObjDiscardAsyncJob(virQEMUDriverPtr driver,
                                   virDomainObjPtr obj);
 void qemuDomainObjReleaseAsyncJob(virDomainObjPtr obj);
 
+qemuMonitorPtr qemuDomainGetMonitor(virDomainObjPtr vm)
+    ATTRIBUTE_NONNULL(1);
 void qemuDomainObjEnterMonitor(virQEMUDriverPtr driver,
                                virDomainObjPtr obj)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
@@ -255,6 +303,7 @@ int qemuDomainObjEnterMonitorAsync(virQEMUDriverPtr driver,
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_RETURN_CHECK;
 
 
+qemuAgentPtr qemuDomainGetAgent(virDomainObjPtr vm);
 void qemuDomainObjEnterAgent(virDomainObjPtr obj)
     ATTRIBUTE_NONNULL(1);
 void qemuDomainObjExitAgent(virDomainObjPtr obj)
@@ -291,36 +340,47 @@ char *qemuDomainDefFormatLive(virQEMUDriverPtr driver,
 void qemuDomainObjTaint(virQEMUDriverPtr driver,
                         virDomainObjPtr obj,
                         virDomainTaintFlags taint,
-                        int logFD);
+                        qemuDomainLogContextPtr logCtxt);
 
 void qemuDomainObjCheckTaint(virQEMUDriverPtr driver,
                              virDomainObjPtr obj,
-                             int logFD);
+                             qemuDomainLogContextPtr logCtxt);
 void qemuDomainObjCheckDiskTaint(virQEMUDriverPtr driver,
                                  virDomainObjPtr obj,
                                  virDomainDiskDefPtr disk,
-                                 int logFD);
+                                 qemuDomainLogContextPtr logCtxt);
 void qemuDomainObjCheckHostdevTaint(virQEMUDriverPtr driver,
                                     virDomainObjPtr obj,
                                     virDomainHostdevDefPtr disk,
-                                    int logFD);
+                                    qemuDomainLogContextPtr logCtxt);
 void qemuDomainObjCheckNetTaint(virQEMUDriverPtr driver,
                                 virDomainObjPtr obj,
                                 virDomainNetDefPtr net,
-                                int logFD);
+                                qemuDomainLogContextPtr logCtxt);
 
+typedef enum {
+    QEMU_DOMAIN_LOG_CONTEXT_MODE_START,
+    QEMU_DOMAIN_LOG_CONTEXT_MODE_ATTACH,
+    QEMU_DOMAIN_LOG_CONTEXT_MODE_STOP,
+} qemuDomainLogContextMode;
 
-int qemuDomainCreateLog(virQEMUDriverPtr driver, virDomainObjPtr vm, bool append);
-int qemuDomainOpenLog(virQEMUDriverPtr driver, virDomainObjPtr vm, off_t pos);
-int qemuDomainAppendLog(virQEMUDriverPtr driver,
-                        virDomainObjPtr vm,
-                        int logFD,
-                        const char *fmt, ...) ATTRIBUTE_FMT_PRINTF(4, 5);
+qemuDomainLogContextPtr qemuDomainLogContextNew(virQEMUDriverPtr driver,
+                                                virDomainObjPtr vm,
+                                                qemuDomainLogContextMode mode);
+int qemuDomainLogContextWrite(qemuDomainLogContextPtr ctxt,
+                              const char *fmt, ...) ATTRIBUTE_FMT_PRINTF(2, 3);
+ssize_t qemuDomainLogContextRead(qemuDomainLogContextPtr ctxt,
+                                 char **msg);
+int qemuDomainLogContextGetWriteFD(qemuDomainLogContextPtr ctxt);
+void qemuDomainLogContextMarkPosition(qemuDomainLogContextPtr ctxt);
+void qemuDomainLogContextRef(qemuDomainLogContextPtr ctxt);
+void qemuDomainLogContextFree(qemuDomainLogContextPtr ctxt);
 
 const char *qemuFindQemuImgBinary(virQEMUDriverPtr driver);
 
 int qemuDomainSnapshotWriteMetadata(virDomainObjPtr vm,
                                     virDomainSnapshotObjPtr snapshot,
+                                    virCapsPtr caps,
                                     char *snapshotDir);
 
 int qemuDomainSnapshotForEachQcow2(virQEMUDriverPtr driver,
@@ -372,6 +432,13 @@ int qemuDomainDetermineDiskChain(virQEMUDriverPtr driver,
                                  bool force_probe,
                                  bool report_broken);
 
+bool qemuDomainDiskSourceDiffers(virConnectPtr conn,
+                                 virDomainDiskDefPtr disk,
+                                 virDomainDiskDefPtr origDisk);
+
+bool qemuDomainDiskChangeSupported(virDomainDiskDefPtr disk,
+                                   virDomainDiskDefPtr orig_disk);
+
 int qemuDomainStorageFileInit(virQEMUDriverPtr driver,
                               virDomainObjPtr vm,
                               virStorageSourcePtr src);
@@ -391,11 +458,15 @@ extern virDomainDefParserConfig virQEMUDriverDomainDefParserConfig;
 int qemuDomainUpdateDeviceList(virQEMUDriverPtr driver,
                                virDomainObjPtr vm, int asyncJob);
 
+int qemuDomainUpdateMemoryDeviceInfo(virQEMUDriverPtr driver,
+                                     virDomainObjPtr vm,
+                                     int asyncJob);
+
 bool qemuDomainDefCheckABIStability(virQEMUDriverPtr driver,
                                     virDomainDefPtr src,
                                     virDomainDefPtr dst);
 
-bool qemuDomainAgentAvailable(qemuDomainObjPrivatePtr priv,
+bool qemuDomainAgentAvailable(virDomainObjPtr vm,
                               bool reportError);
 
 int qemuDomainJobInfoUpdateTime(qemuDomainJobInfoPtr jobInfo)
@@ -412,6 +483,38 @@ int qemuDomainJobInfoToParams(qemuDomainJobInfoPtr jobInfo,
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
     ATTRIBUTE_NONNULL(3) ATTRIBUTE_NONNULL(4);
 
-void qemuDomObjEndAPI(virDomainObjPtr *vm);
+int qemuDomainSupportsBlockJobs(virDomainObjPtr vm, bool *modern)
+    ATTRIBUTE_NONNULL(1);
+bool qemuDomainDiskBlockJobIsActive(virDomainDiskDefPtr disk);
+bool qemuDomainHasBlockjob(virDomainObjPtr vm, bool copy_only)
+    ATTRIBUTE_NONNULL(1);
+
+int qemuDomainAlignMemorySizes(virDomainDefPtr def);
+void qemuDomainMemoryDeviceAlignSize(virDomainDefPtr def,
+                                     virDomainMemoryDefPtr mem);
+
+virDomainChrDefPtr qemuFindAgentConfig(virDomainDefPtr def);
+
+bool qemuDomainMachineIsQ35(const virDomainDef *def);
+bool qemuDomainMachineIsI440FX(const virDomainDef *def);
+bool qemuDomainMachineNeedsFDC(const virDomainDef *def);
+bool qemuDomainMachineIsS390CCW(const virDomainDef *def);
+bool qemuDomainMachineHasBuiltinIDE(const virDomainDef *def);
+
+int qemuDomainUpdateCurrentMemorySize(virQEMUDriverPtr driver,
+                                      virDomainObjPtr vm);
+
+unsigned long long qemuDomainGetMemLockLimitBytes(virDomainDefPtr def);
+bool qemuDomainRequiresMemLock(virDomainDefPtr def);
+int qemuDomainAdjustMaxMemLock(virDomainObjPtr vm);
+
+int qemuDomainDefValidateMemoryHotplug(const virDomainDef *def,
+                                       virQEMUCapsPtr qemuCaps,
+                                       const virDomainMemoryDef *mem);
+
+bool qemuDomainHasVcpuPids(virDomainObjPtr vm);
+pid_t qemuDomainGetVcpuPid(virDomainObjPtr vm, unsigned int vcpu);
+int qemuDomainDetectVcpuPids(virQEMUDriverPtr driver, virDomainObjPtr vm,
+                             int asyncJob);
 
 #endif /* __QEMU_DOMAIN_H__ */

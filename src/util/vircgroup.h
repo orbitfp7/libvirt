@@ -1,7 +1,7 @@
 /*
  * vircgroup.h: methods for managing control cgroups
  *
- * Copyright (C) 2011-2014 Red Hat, Inc.
+ * Copyright (C) 2011-2015 Red Hat, Inc.
  * Copyright IBM Corp. 2008
  *
  * This library is free software; you can redistribute it and/or
@@ -26,6 +26,7 @@
 # define __VIR_CGROUP_H__
 
 # include "virutil.h"
+# include "virbitmap.h"
 
 struct virCgroup;
 typedef struct virCgroup *virCgroupPtr;
@@ -46,6 +47,19 @@ enum {
 };
 
 VIR_ENUM_DECL(virCgroupController);
+/* Items of this enum are used later in virCgroupNew to create
+ * bit array stored in int. Like this:
+ *   1 << VIR_CGROUP_CONTROLLER_CPU
+ * Make sure we will not overflow */
+verify(VIR_CGROUP_CONTROLLER_LAST < 8 * sizeof(int));
+
+typedef enum {
+    VIR_CGROUP_THREAD_VCPU = 0,
+    VIR_CGROUP_THREAD_EMULATOR,
+    VIR_CGROUP_THREAD_IOTHREAD,
+
+    VIR_CGROUP_THREAD_LAST
+} virCgroupThreadName;
 
 bool virCgroupAvailable(void);
 
@@ -65,22 +79,12 @@ int virCgroupNewDomainPartition(virCgroupPtr partition,
                                 virCgroupPtr *group)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2) ATTRIBUTE_NONNULL(5);
 
-int virCgroupNewVcpu(virCgroupPtr domain,
-                     int vcpuid,
-                     bool create,
-                     virCgroupPtr *group)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
-
-int virCgroupNewEmulator(virCgroupPtr domain,
-                         bool create,
-                         virCgroupPtr *group)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(3);
-
-int virCgroupNewIOThread(virCgroupPtr domain,
-                         int iothreadid,
-                         bool create,
-                         virCgroupPtr *group)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(4);
+int virCgroupNewThread(virCgroupPtr domain,
+                       virCgroupThreadName nameval,
+                       int id,
+                       bool create,
+                       virCgroupPtr *group)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(5);
 
 int virCgroupNewDetect(pid_t pid,
                        int controllers,
@@ -88,14 +92,15 @@ int virCgroupNewDetect(pid_t pid,
 
 int virCgroupNewDetectMachine(const char *name,
                               const char *drivername,
+                              int id,
+                              bool privileged,
                               pid_t pid,
-                              const char *partition,
                               int controllers,
-                              virCgroupPtr *group);
+                              virCgroupPtr *group)
+    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
 
 int virCgroupNewMachine(const char *name,
                         const char *drivername,
-                        bool privileged,
                         const unsigned char *uuid,
                         const char *rootdir,
                         pid_t pidleader,
@@ -106,12 +111,10 @@ int virCgroupNewMachine(const char *name,
                         int controllers,
                         virCgroupPtr *group)
     ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2)
-    ATTRIBUTE_NONNULL(4);
+    ATTRIBUTE_NONNULL(3);
 
-int virCgroupTerminateMachine(const char *name,
-                              const char *drivername,
-                              bool privileged)
-    ATTRIBUTE_NONNULL(1) ATTRIBUTE_NONNULL(2);
+int virCgroupTerminateMachine(const char *name)
+    ATTRIBUTE_NONNULL(1);
 
 bool virCgroupNewIgnoreError(void);
 
@@ -166,6 +169,26 @@ int virCgroupSetBlkioDeviceReadBps(virCgroupPtr group,
 int virCgroupSetBlkioDeviceWriteBps(virCgroupPtr group,
                                     const char *path,
                                     unsigned long long wbps);
+
+int virCgroupGetBlkioDeviceWeight(virCgroupPtr group,
+                                  const char *path,
+                                  unsigned int *weight);
+
+int virCgroupGetBlkioDeviceReadIops(virCgroupPtr group,
+                                    const char *path,
+                                    unsigned int *riops);
+
+int virCgroupGetBlkioDeviceWriteIops(virCgroupPtr group,
+                                     const char *path,
+                                     unsigned int *wiops);
+
+int virCgroupGetBlkioDeviceReadBps(virCgroupPtr group,
+                                   const char *path,
+                                   unsigned long long *rbps);
+
+int virCgroupGetBlkioDeviceWriteBps(virCgroupPtr group,
+                                    const char *path,
+                                    unsigned long long *wbps);
 
 int virCgroupSetMemory(virCgroupPtr group, unsigned long long kb);
 int virCgroupGetMemoryUsage(virCgroupPtr group, unsigned long *kb);
@@ -224,7 +247,7 @@ virCgroupGetPercpuStats(virCgroupPtr group,
                         unsigned int nparams,
                         int start_cpu,
                         unsigned int ncpus,
-                        unsigned int nvcpupids);
+                        virBitmapPtr guestvcpus);
 
 int
 virCgroupGetDomainTotalCpuStats(virCgroupPtr group,
@@ -251,6 +274,9 @@ int virCgroupGetFreezerState(virCgroupPtr group, char **state);
 int virCgroupSetCpusetMems(virCgroupPtr group, const char *mems);
 int virCgroupGetCpusetMems(virCgroupPtr group, char **mems);
 
+int virCgroupSetCpusetMemoryMigrate(virCgroupPtr group, bool migrate);
+int virCgroupGetCpusetMemoryMigrate(virCgroupPtr group, bool *migrate);
+
 int virCgroupSetCpusetCpus(virCgroupPtr group, const char *cpus);
 int virCgroupGetCpusetCpus(virCgroupPtr group, char **cpus);
 
@@ -261,9 +287,9 @@ int virCgroupKill(virCgroupPtr group, int signum);
 int virCgroupKillRecursive(virCgroupPtr group, int signum);
 int virCgroupKillPainfully(virCgroupPtr group);
 
-int virCgroupIsolateMount(virCgroupPtr group,
-                          const char *oldroot,
-                          const char *mountopts);
+int virCgroupBindMount(virCgroupPtr group,
+                       const char *oldroot,
+                       const char *mountopts);
 
 bool virCgroupSupportsCpuBW(virCgroupPtr cgroup);
 
@@ -274,4 +300,5 @@ int virCgroupSetOwner(virCgroupPtr cgroup,
 
 int virCgroupHasEmptyTasks(virCgroupPtr cgroup, int controller);
 
+bool virCgroupControllerAvailable(int controller);
 #endif /* __VIR_CGROUP_H__ */

@@ -76,7 +76,15 @@
       <value>fat</value>
       <value>vhd</value>
       <value>ploop</value>
+      <value>replication</value>
       <ref name='storageFormatBacking'/>
+    </choice>
+  </define>
+
+  <define name="storageMode">
+    <choice>
+      <value>primary</value>
+      <value>secondary</value>
     </choice>
   </define>
 
@@ -98,21 +106,27 @@
     <optional>
       <element name='permissions'>
         <interleave>
-          <element name='mode'>
-            <ref name='octalMode'/>
-          </element>
-          <element name='owner'>
-            <choice>
-              <ref name='unsignedInt'/>
-              <value>-1</value>
-            </choice>
-          </element>
-          <element name='group'>
-            <choice>
-              <ref name='unsignedInt'/>
-              <value>-1</value>
-            </choice>
-          </element>
+          <optional>
+            <element name='mode'>
+              <ref name='octalMode'/>
+            </element>
+          </optional>
+          <optional>
+            <element name='owner'>
+              <choice>
+                <ref name='unsignedInt'/>
+                <value>-1</value>
+              </choice>
+            </element>
+          </optional>
+          <optional>
+            <element name='group'>
+              <choice>
+                <ref name='unsignedInt'/>
+                <value>-1</value>
+              </choice>
+            </element>
+          </optional>
           <optional>
             <element name='label'>
               <text/>

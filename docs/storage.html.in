@@ -291,7 +291,8 @@
         the <a href="#StorageBackendGluster">gluster</a> pool.)
       </li>
       <li>
-        <code>cifs</code> - use the SMB (samba) or CIFS file system
+        <code>cifs</code> - use the SMB (samba) or CIFS file system.
+        The mount will use "-o guest" to mount the directory anonymously.
       </li>
     </ul>
 
@@ -346,6 +347,7 @@
       on the size and placement of volumes. The 'free extents'
       information will detail the regions which are available for creating
       new volumes. A volume cannot span across 2 different free extents.
+      It will default to using <code>msdos</code> as the pool source format.
     </p>
 
     <h3>Example pool input</h3>
@@ -438,6 +440,12 @@
       to use <code>/dev/disk/by-path</code> or <code>/dev/disk/by-id</code>
       for the target path. These provide persistent stable naming for LUNs
     </p>
+    <p>
+      The libvirt iSCSI storage backend does not resolve the provided
+      host name or IP address when finding the available target IQN's
+      on the host; therefore, defining two pools to use the same IQN
+      on the same host will fail the duplicate source pool checks.
+    </p>
 
     <h3>Example pool input</h3>
     <pre>
@@ -445,7 +453,7 @@
         &lt;name&gt;virtimages&lt;/name&gt;
         &lt;source&gt;
           &lt;host name="iscsi.example.com"/&gt;
-          &lt;device path="demo-target"/&gt;
+          &lt;device path="iqn.2013-06.com.example:iscsi-pool"/&gt;
         &lt;/source&gt;
         &lt;target&gt;
           &lt;path&gt;/dev/disk/by-path&lt;/path&gt;
@@ -497,7 +505,8 @@
     <h2><a name="StorageBackendMultipath">Multipath pools</a></h2>
     <p>
       This provides a pool that contains all the multipath devices on the
-      host. Volume creating is not supported via the libvirt APIs.
+      host. Therefore, only one Multipath pool may be configured per host.
+      Volume creating is not supported via the libvirt APIs.
       The target element is actually ignored, but one is required to appease
       the libvirt XML parser.<br/>
       <br/>
@@ -541,7 +550,9 @@
       backend supports cephx authentication for communication with the
       Ceph cluster. Storing the cephx authentication key is done with
       the libvirt secret mechanism. The UUID in the example pool input
-      refers to the UUID of the stored secret.
+      refers to the UUID of the stored secret.<br />
+      The port attribute for a Ceph monitor does not have to be provided.
+      If not provided librados will use the default Ceph monitor port.
       <span class="since">Since 0.9.13</span>
     </p>
 
@@ -551,8 +562,8 @@
         &lt;name&gt;myrbdpool&lt;/name&gt;
         &lt;source&gt;
           &lt;name&gt;rbdpool&lt;/name&gt;
-          &lt;host name='1.2.3.4' port='6789'/&gt;
-          &lt;host name='my.ceph.monitor' port='6789'/&gt;
+          &lt;host name='1.2.3.4'/&gt;
+          &lt;host name='my.ceph.monitor'/&gt;
           &lt;host name='third.ceph.monitor' port='6789'/&gt;
           &lt;auth username='admin' type='ceph'&gt;
             &lt;secret uuid='2ec115d7-3a88-3ceb-bc12-0ac909a6fd87'/&gt;

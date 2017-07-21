@@ -22,47 +22,6 @@
 static virCapsPtr caps;
 static virDomainXMLOptionPtr xmlopt;
 
-static int
-testCompareXMLToXMLFiles(const char *inxml, const char *outxml, bool live)
-{
-    char *inXmlData = NULL;
-    char *outXmlData = NULL;
-    char *actual = NULL;
-    int ret = -1;
-    virDomainDefPtr def = NULL;
-
-    if (virtTestLoadFile(inxml, &inXmlData) < 0)
-        goto fail;
-    if (virtTestLoadFile(outxml, &outXmlData) < 0)
-        goto fail;
-
-    if (!(def = virDomainDefParseString(inXmlData, caps, xmlopt,
-                                        1 << VIR_DOMAIN_VIRT_LXC,
-                                        live ? 0 : VIR_DOMAIN_DEF_PARSE_INACTIVE)))
-        goto fail;
-
-    if (!virDomainDefCheckABIStability(def, def)) {
-        fprintf(stderr, "ABI stability check failed on %s", inxml);
-        goto fail;
-    }
-
-    if (!(actual = virDomainDefFormat(def, VIR_DOMAIN_DEF_FORMAT_SECURE)))
-        goto fail;
-
-    if (STRNEQ(outXmlData, actual)) {
-        virtTestDifference(stderr, outXmlData, actual);
-        goto fail;
-    }
-
-    ret = 0;
- fail:
-    VIR_FREE(inXmlData);
-    VIR_FREE(outXmlData);
-    VIR_FREE(actual);
-    virDomainDefFree(def);
-    return ret;
-}
-
 struct testInfo {
     const char *name;
     int different;
@@ -83,24 +42,10 @@ testCompareXMLToXMLHelper(const void *data)
                     abs_srcdir, info->name) < 0)
         goto cleanup;
 
-    if (info->different) {
-        if (testCompareXMLToXMLFiles(xml_in, xml_out, false) < 0)
-            goto cleanup;
-    } else {
-        if (testCompareXMLToXMLFiles(xml_in, xml_in, false) < 0)
-            goto cleanup;
-    }
-    if (!info->inactive_only) {
-        if (info->different) {
-            if (testCompareXMLToXMLFiles(xml_in, xml_out, true) < 0)
-                goto cleanup;
-        } else {
-            if (testCompareXMLToXMLFiles(xml_in, xml_in, true) < 0)
-                goto cleanup;
-        }
-    }
-
-    ret = 0;
+    ret = testCompareDomXML2XMLFiles(caps, xmlopt, xml_in,
+                                     info->different ? xml_out : xml_in,
+                                     !info->inactive_only,
+                                     NULL, NULL);
  cleanup:
     VIR_FREE(xml_in);
     VIR_FREE(xml_out);
@@ -145,6 +90,7 @@ mymain(void)
     DO_TEST("filesystem-root");
     DO_TEST("idmap");
     DO_TEST("capabilities");
+    DO_TEST("sharenet");
 
     virObjectUnref(caps);
     virObjectUnref(xmlopt);

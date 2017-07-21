@@ -427,7 +427,7 @@ virDomainAuditHostdev(virDomainObjPtr vm, virDomainHostdevDefPtr hostdev,
             } else {
                 virDomainHostdevSubsysSCSIHostPtr scsihostsrc =
                     &scsisrc->u.host;
-                if (virAsprintfQuiet(&address, "%s:%d:%d:%d",
+                if (virAsprintfQuiet(&address, "%s:%u:%u:%llu",
                                      scsihostsrc->adapter, scsihostsrc->bus,
                                      scsihostsrc->target,
                                      scsihostsrc->unit) < 0) {
@@ -790,6 +790,15 @@ virDomainAuditVcpu(virDomainObjPtr vm,
     return virDomainAuditResource(vm, "vcpu", oldvcpu, newvcpu, reason, success);
 }
 
+void
+virDomainAuditIOThread(virDomainObjPtr vm,
+                       unsigned int oldiothread, unsigned int newiothread,
+                       const char *reason, bool success)
+{
+    return virDomainAuditResource(vm, "iothread", oldiothread, newiothread,
+                                  reason, success);
+}
+
 static void
 virDomainAuditLifecycle(virDomainObjPtr vm, const char *op,
                         const char *reason, bool success)
@@ -859,7 +868,7 @@ virDomainAuditStart(virDomainObjPtr vm, const char *reason, bool success)
         if (i == 0 &&
             (vm->def->consoles[i]->targetType == VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_SERIAL ||
              vm->def->consoles[i]->targetType == VIR_DOMAIN_CHR_CONSOLE_TARGET_TYPE_NONE) &&
-             STREQ_NULLABLE(vm->def->os.type, "hvm"))
+             vm->def->os.type == VIR_DOMAIN_OSTYPE_HVM)
             continue;
 
         virDomainAuditChardev(vm, NULL, vm->def->consoles[i], "start", true);
@@ -874,8 +883,11 @@ virDomainAuditStart(virDomainObjPtr vm, const char *reason, bool success)
     if (vm->def->tpm)
         virDomainAuditTPM(vm, vm->def->tpm, "start", true);
 
-    virDomainAuditMemory(vm, 0, vm->def->mem.cur_balloon, "start", true);
-    virDomainAuditVcpu(vm, 0, vm->def->vcpus, "start", true);
+    virDomainAuditMemory(vm, 0, virDomainDefGetMemoryActual(vm->def),
+                         "start", true);
+    virDomainAuditVcpu(vm, 0, virDomainDefGetVcpus(vm->def), "start", true);
+    if (vm->def->niothreadids)
+        virDomainAuditIOThread(vm, 0, vm->def->niothreadids, "start", true);
 
     virDomainAuditLifecycle(vm, "start", reason, success);
 }

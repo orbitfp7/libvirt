@@ -30,7 +30,7 @@
 
 # include "internal.h"
 # include "libvirt_internal.h"
-# include "domain_conf.h"
+# include "virdomainobjlist.h"
 # include "domain_event.h"
 # include "capabilities.h"
 # include "configmake.h"
@@ -38,6 +38,7 @@
 # include "virobject.h"
 # include "virchrdev.h"
 # include "virhostdev.h"
+# include "locking/lock_manager.h"
 
 # define LIBXL_DRIVER_NAME "xenlight"
 # define LIBXL_VNC_PORT_MIN  5900
@@ -46,6 +47,11 @@
 # define LIBXL_MIGRATION_PORT_MIN  49152
 # define LIBXL_MIGRATION_PORT_MAX  49216
 
+/* Used for prefix of ifname of any network name generated dynamically
+ * by libvirt for Xen, and cannot be used for a persistent network name.  */
+# define LIBXL_GENERATED_PREFIX_XEN "vif"
+
+# define LIBXL_CONFIG_BASE_DIR SYSCONFDIR "/libvirt"
 # define LIBXL_CONFIG_DIR SYSCONFDIR "/libvirt/libxl"
 # define LIBXL_AUTOSTART_DIR LIBXL_CONFIG_DIR "/autostart"
 # define LIBXL_STATE_DIR LOCALSTATEDIR "/run/libvirt/libxl"
@@ -54,6 +60,14 @@
 # define LIBXL_SAVE_DIR LIBXL_LIB_DIR "/save"
 # define LIBXL_DUMP_DIR LIBXL_LIB_DIR "/dump"
 # define LIBXL_BOOTLOADER_PATH "pygrub"
+
+# ifndef LIBXL_FIRMWARE_DIR
+#  define LIBXL_FIRMWARE_DIR "/usr/lib/xen/boot"
+# endif
+# ifndef LIBXL_EXECBIN_DIR
+#  define LIBXL_EXECBIN_DIR "/usr/lib/xen/bin"
+# endif
+
 
 /* libxl interface for setting VCPU affinity changed in 4.5. In fact, a new
  * parameter has been added, representative of 'VCPU soft affinity'. If one
@@ -89,9 +103,15 @@ struct _libxlDriverConfig {
      * memory for new domains from domain0. */
     bool autoballoon;
 
+    char *lockManagerName;
+
+    int keepAliveInterval;
+    unsigned int keepAliveCount;
+
     /* Once created, caps are immutable */
     virCapsPtr caps;
 
+    char *configBaseDir;
     char *configDir;
     char *autostartDir;
     char *logDir;
@@ -127,13 +147,16 @@ struct _libxlDriverPrivate {
     virObjectEventStatePtr domainEventState;
 
     /* Immutable pointer, self-locking APIs */
-    virPortAllocatorPtr reservedVNCPorts;
+    virPortAllocatorPtr reservedGraphicsPorts;
 
     /* Immutable pointer, self-locking APIs */
     virPortAllocatorPtr migrationPorts;
 
     /* Immutable pointer, lockless APIs*/
     virSysinfoDefPtr hostsysinfo;
+
+    /* Immutable pointer. lockless access */
+    virLockManagerPluginPtr lockManager;
 };
 
 # define LIBXL_SAVE_MAGIC "libvirt-xml\n \0 \r"
@@ -158,6 +181,9 @@ libxlDriverConfigGet(libxlDriverPrivatePtr driver);
 int
 libxlDriverNodeGetInfo(libxlDriverPrivatePtr driver,
                        virNodeInfoPtr info);
+
+int libxlDriverConfigLoadFile(libxlDriverConfigPtr cfg,
+                              const char *filename);
 
 virCapsPtr
 libxlMakeCapabilities(libxl_ctx *ctx);
